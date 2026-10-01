@@ -197,28 +197,31 @@ def parse_json_safely(raw_text):
     except Exception:
         return None
 
-def generate_job_content(title, img_paths):
+def generate_job_content(title, img_paths, article_text=""):
     cur_en, cur_bn = get_current_years()
     clean_title = clean_title_for_display(title)
     words = clean_title.split()
     org_name = clean_title.split("নিয়োগ")[0].strip() if "নিয়োগ" in clean_title else " ".join(words[:min(3, len(words))])
     vac_str, qual_str = extract_vacancy_and_qual(clean_title)
 
-    # 🌟 প্রম্পটে ইমেজ এবং টেক্সট থেকে আবেদন পদ্ধতি স্ক্যান করার কড়া নিয়ম
+    snippet_text = article_text[:1800].strip() if article_text else "None provided"
+
+    # 🌟 প্রম্পটে ইমেজ এবং আর্টিকেল টেক্সট উভয়টি পড়ে অফলাইন ফিল্টার করার কড়া ইনস্ট্রাকশন
     prompt = f"""You are a professional Bengali YouTube SEO specialist, scriptwriter, and circular inspector.
 Context:
 - Job Circular Title: "{clean_title}"
 - Organization: "{org_name}"
+- Article Body Text: "{snippet_text}"
 
-CRITICAL STEP 1 - APPLICATION SUBMISSION INSPECTION (CHECK BOTH IMAGES AND TEXT):
-Carefully inspect the official scanned notice images and text to see how applicants must submit their application:
-- Set "application_type": "offline" ONLY IF candidates are required to submit application papers via:
-  1. Postal Mail / Post Office (ডাকযোগে / রেজিস্টার্ড ডাকে / ডাক মারফত)
+CRITICAL STEP 1 - STRICT APPLICATION METHOD INSPECTION (CHECK SCANNED IMAGES AND TEXT):
+Analyze the official circular images and article text carefully to identify how candidates must submit their application:
+- Set "application_type": "offline" IF candidates are required to submit application papers via:
+  1. Postal Mail / Post Office (ডাকযোগে / রেজিস্টার্ড ডাকে / ডাক মারফত / ডাকযোগে প্রেরণ)
   2. Courier Service (কুরিয়ারের মাধ্যমে)
-  3. Direct Physical In-Person submission by hand (সরাসরি অফিসে গিয়ে / হাতে হাতে জমা দেওয়া)
-  And state the reason in "offline_reason" (e.g. "আবেদনপত্র ডাকযোগে পাঠাতে হবে").
-- Set "application_type": "online" IF candidates can apply Online (e.g. teletalk.com.bd, web portal, online link, or email).
-CAUTION: If circular states 'অনলাইনে আবেদন করতে হবে, ডাকযোগে কোনো আবেদন গ্রহণযোগ্য নয়', that is ONLINE, not offline!
+  3. Direct Physical In-Person submission (সরাসরি অফিসে গিয়ে / অফিসে রক্ষিত বাক্সে / হাতে হাতে জমা দেওয়া)
+  And state the exact reason in "offline_reason" (e.g. "আবেদনপত্র ডাকযোগে পাঠাতে বলা হয়েছে").
+- Set "application_type": "online" IF candidates can apply Online (e.g. teletalk.com.bd, web portal, online link, Google form, or email submission).
+IMPORTANT EXCEPTION: If the text/notice states 'অনলাইনে আবেদন করতে হবে, ডাকযোগে কোনো আবেদন গ্রহণযোগ্য নয়', that is ONLINE, NOT offline!
 
 CRITICAL STEP 2 - CONTENT GENERATION (ONLY IF ONLINE):
 1. SCRIPT: Exactly 3 minutes (380 to 440 words). Spoken Bengali. No year. Numbers in Bengali words. WhatsApp call to action at end (without 'ঘরে বসে').
@@ -273,7 +276,7 @@ Return strictly valid JSON:
                             app_type = data.get("application_type", "online").strip().lower()
                             off_reason = data.get("offline_reason", "ডাকযোগে বা সরাসরি আবেদন করতে বলা হয়েছে").strip()
 
-                            # যদি অফলাইন সার্কুলার হয়
+                            # অফলাইন সার্কুলার হলে সরাসরি রিটার্ন
                             if app_type == "offline":
                                 save_ollama_index(cur_k_idx, total_o_keys)
                                 return None, None, None, None, None, "offline", off_reason
