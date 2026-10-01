@@ -1,11 +1,31 @@
 # -*- coding: utf-8 -*-
 import os, random
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips, ImageClip, CompositeVideoClip
 
+def apply_circular_invert_effect(pil_img):
+    """
+    🌟 নিয়োগ বিজ্ঞপ্তির ছবিতে Invert color ইফেক্ট প্রয়োগ:
+    ছবিটি কালারফুল হলে প্রথমে ব্ল্যাক অ্যান্ড হোয়াইট (Grayscale) করা হবে,
+    তারপর Invert color প্রয়োগ করে ডার্ক-মোড লুক দেওয়া হবে।
+    """
+    # ১. ছবিটিকে প্রথমে ব্ল্যাক অ্যান্ড হোয়াইট (L মোড) এ রূপান্তর
+    bw_img = pil_img.convert("L")
+    
+    # ২. এরপর ইনভার্ট কালার ইফেক্ট প্রয়োগ (কালো হবে সাদা, সাদা হবে কালো)
+    inverted_img = ImageOps.invert(bw_img)
+    
+    # ৩. ভিডিও রেন্ডারিংয়ের জন্য পুনরায় স্ট্যান্ডার্ড RGB ফরম্যাটে রূপান্তর
+    return inverted_img.convert("RGB")
+
 def make_video_frame(img_path, duration, target_w=1920, target_h=1080):
-    pil_img = Image.open(img_path).convert("RGB")
+    pil_raw = Image.open(img_path)
+    
+    # 🌟 বিজ্ঞপ্তির ছবিতে ব্ল্যাক অ্যান্ড হোয়াইট + ইনভার্ট কালার ইফেক্ট প্রয়োগ
+    pil_img = apply_circular_invert_effect(pil_raw)
+    pil_raw.close()
+
     w, h = pil_img.size
     ratio = w / h
     target_ratio = target_w / target_h
@@ -74,7 +94,7 @@ def apply_front_overlay(main_clip, target_w, target_h):
         try:
             pil_front = Image.open(front_path).convert("RGBA")
             
-            # 🌟 ১. সাইজ আরেকটু বড় করা হয়েছে (ল্যান্ডস্কেপে ৩৫% এবং পোর্ট্রেটে ৪৫%)
+            # সাইজ: ল্যান্ডস্কেপে ৩৫% এবং পোর্ট্রেটে ৪৫%
             scale_ratio = 0.35 if target_w >= target_h else 0.45
             scaled_w = int(target_w * scale_ratio)
             scaled_h = int((scaled_w / pil_front.width) * pil_front.height)
@@ -91,11 +111,9 @@ def apply_front_overlay(main_clip, target_w, target_h):
             avail_w = max(1, target_w - scaled_w - 2 * pad)
             avail_h = max(1, target_h - scaled_h - 2 * pad)
             
-            # 🌟 ২. স্থির ও ধীর গতি (Fixed Slow Speed: প্রতি সেকেন্ডে ২৮ ও ২০ পিক্সেল)
             speed_x = 28.0
             speed_y = 20.0
             
-            # 🌟 ৩. র‍্যান্ডম প্রারম্ভিক পজিশন ও ডিরেকশন (Random Starting Point)
             init_x_phase = random.uniform(0, 2 * avail_w)
             init_y_phase = random.uniform(0, 2 * avail_h)
             dir_x = random.choice([-1.0, 1.0])
