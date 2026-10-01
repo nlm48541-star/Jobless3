@@ -27,20 +27,10 @@ ORG_LOGO_RULES = [
     (['গণপূর্ত', 'pwd', 'গণপূর্ত অধিদপ্তর'], ['PWD.jpeg', 'PWD.png', 'pwd.jpeg', 'pwd.png', 'PWD.jpg', 'pwd.jpg']),
 ]
 
-VIBRANT_PALETTES = [
-    {"bar_bg": "#001275", "border": "#000a40", "bar_text": "#ffffff", "bot_text": "#ffffff", "sub_bg": "#ffe600", "sub_text": "#000000", "hook_text": "#d80000"},
-    {"bar_bg": "#002fa7", "border": "#001c66", "bar_text": "#ffffff", "bot_text": "#ffe600", "sub_bg": "#ffd700", "sub_text": "#000000", "hook_text": "#d60000"},
-    {"bar_bg": "#00521b", "border": "#003310", "bar_text": "#ffffff", "bot_text": "#ffe600", "sub_bg": "#ffea00", "sub_text": "#000000", "hook_text": "#d80000"},
-    {"bar_bg": "#6b0014", "border": "#42000c", "bar_text": "#ffffff", "bot_text": "#ffffff", "sub_bg": "#ffea00", "sub_text": "#000000", "hook_text": "#d80000"},
-    {"bar_bg": "#38006b", "border": "#20003d", "bar_text": "#ffffff", "bot_text": "#ffe600", "sub_bg": "#ffe600", "sub_text": "#000000", "hook_text": "#d60000"},
-    {"bar_bg": "#004754", "border": "#002a33", "bar_text": "#ffffff", "bot_text": "#ffffff", "sub_bg": "#ffea00", "sub_text": "#000000", "hook_text": "#d80000"}
-]
-
 def find_matched_org_logo(title_text):
     """কেস-ইনসেনসিটিভভাবে Photos ফোল্ডার থেকে নির্দিষ্ট লোগো খুঁজে বের করে"""
     if not os.path.exists(PHOTOS_DIR): return None
     
-    # Photos ফোল্ডারের সব ফাইল লোয়ারকেস ম্যাপিং করা
     disk_files = {f.lower(): os.path.join(PHOTOS_DIR, f) for f in os.listdir(PHOTOS_DIR)}
     t_lower = str(title_text).lower()
 
@@ -50,6 +40,61 @@ def find_matched_org_logo(title_text):
                 if fn.lower() in disk_files:
                     return disk_files[fn.lower()]
     return None
+
+def is_government_job(title="", thumb_meta=None):
+    """
+    সার্কুলারটি সরকারি নাকি বেসরকারি তা নিখুঁতভাবে যাচাই করে
+    """
+    if not thumb_meta: thumb_meta = {}
+
+    # ১. AI মেটাডাটা যদি সরাসরি ক্যাটাগরি দেয়
+    meta_cat = str(thumb_meta.get("job_category", "")).lower()
+    if any(k in meta_cat for k in ["private", "বেসরকারি", "কোম্পানি"]):
+        return False
+    if any(k in meta_cat for k in ["govt", "সরকারি", "সরকারী"]):
+        return True
+
+    text_to_check = f"{title} {thumb_meta.get('top_text', '')} {thumb_meta.get('row1_text', '')}".lower()
+
+    # ২. বেসরকারি বা কোম্পানির শক্তিশালী কিওয়ার্ড
+    private_keywords = [
+        'বেসরকারি', 'বে-সরকারি', 'বেসরকারী', 'বে-সরকারী', 'নন-সরকারি', 'নন সরকারি',
+        'private', 'non-govt', 'company', 'কোম্পানি', 'কোম্পানী', 'লিমিটেড', 'লিমীটেড',
+        'ltd', 'গ্রুপ', 'group', 'ইন্ডাস্ট্রিজ', 'industries', 'ফার্মা', 'pharma',
+        'ফার্মাসিউটিক্যালস', 'pharmaceuticals', 'গার্মেন্টস', 'টেক্সটাইল', 'মার্কেট',
+        'এন্টারপ্রাইজ', 'enterprise', 'শিল্প প্রতিষ্ঠান', 'সিকিউরিটি সার্ভিস', 'শোরুম'
+    ]
+
+    has_private = any(k in text_to_check for k in private_keywords)
+
+    # সরকারি কিওয়ার্ড পরীক্ষার আগে "বেসরকারি" অংশ মুছে নিয়ে চেক করা
+    cleaned_for_govt = re.sub(r'বে[- ]?সরকারি|বে[- ]?সরকারী', '', text_to_check)
+
+    govt_keywords = [
+        'সরকারি', 'সরকারী', 'govt', 'government', 'মন্ত্রণালয়', 'মন্ত্রণালয়', 'ministry',
+        'অধিদপ্তর', 'পরিদপ্তর', 'দপ্তর', 'কমিশন', 'পরিষদ', 'বোর্ড', 'করপোরেশন', 'কর্পোরেশন',
+        'উপজেলা', 'জেলা প্রশাসক', 'ডিসি অফিস', 'ইউনিয়ন পরিষদ', 'পৌরসভা', 'সিটি কর্পোরেশন',
+        'আদালত', 'বিচারক', 'জজ কোর্ট', 'চিফ জুডিশিয়াল', 'সেশন জজ', 'ম্যাজিস্ট্রেট',
+        'রাজস্ব খাত', 'রাজস্ব', 'বাহিনী', 'সেনাবাহিনী', 'নৌবাহিনী', 'বিমানবাহিনী',
+        'পুলিশ', 'আনসার', 'বিজিবি', 'কোস্ট গার্ড', 'র‍্যাব', 'র‌্যাব', 'ফায়ার সার্ভিস',
+        'কারারক্ষী', 'বিসিএস', 'পিএসসি', 'bpsc', 'রেলওয়ে', 'রেলওয়ে', 'খাদ্য অধিদপ্তর',
+        'ডাক বিভাগ', 'পাসপোর্ট', 'পরিবার পরিকল্পনা', 'গণপূর্ত', 'প্রাথমিক বিদ্যালয়',
+        'সহকারী শিক্ষক', 'প্রাইমারি শিক্ষক'
+    ]
+
+    has_govt = any(k in cleaned_for_govt for k in govt_keywords)
+
+    if has_private:
+        return False
+    if has_govt:
+        return True
+
+    # ডিফল্ট: যদি টপ টেক্সটে বেসরকারি উল্লেখ থাকে তবে বেসরকারি
+    top_t = str(thumb_meta.get("top_text", "")).lower()
+    if "বেসরকারি" in top_t or "কোম্পানি" in top_t:
+        return False
+
+    return True
 
 def is_valid_bengali_font(font_path):
     try:
@@ -188,7 +233,33 @@ def generate_dynamic_thumbnail(title, output_path, thumb_meta=None):
 
     if not thumb_meta: thumb_meta = {}
 
-    top_text = strip_unwanted_chars(thumb_meta.get("top_text", "সরকারি চাকরি"))
+    # নির্দিষ্ট প্রতিষ্ঠান লোগো চেকিং
+    matched_logo = find_matched_org_logo(title) or find_matched_org_logo(thumb_meta.get("top_text", ""))
+
+    # সরকারি নাকি বেসরকারি যাচাই
+    # কীওয়ার্ড ম্যাচ করলে তা সরাসরি সরকারি চাকরি হিসেবে নির্ধারিত হবে
+    if matched_logo:
+        is_govt = True
+    else:
+        is_govt = is_government_job(title, thumb_meta)
+
+    # 🌟 কালার থিম কনফিগারেশন:
+    # সরকারি চাকরি: বক্স গাঢ় কালো (#000000), লেখা সাদা (#ffffff)
+    # বেসরকারি চাকরি: বক্স হালকা ডার্ক রেড (#8B0000), লেখা সাদা (#ffffff)
+    if is_govt:
+        bar_bg = "#000000"          # গাঢ় কালো
+        border_color = "#000000"    # কালো বর্ডার
+        bar_text_color = "#ffffff"  # সাদা লেখা
+        bot_text_color = "#ffffff"  # সাদা লেখা
+        default_top = "সরকারি চাকরি"
+    else:
+        bar_bg = "#8B0000"          # হালকা ডার্ক রেড
+        border_color = "#550000"    # ডার্ক রেড বর্ডার
+        bar_text_color = "#ffffff"  # সাদা লেখা
+        bot_text_color = "#ffffff"  # সাদা লেখা
+        default_top = "বেসরকারি চাকরি"
+
+    top_text = strip_unwanted_chars(thumb_meta.get("top_text", default_top))
     row1_text = strip_unwanted_chars(thumb_meta.get("row1_text", "জরুরি নিয়োগ"))
     row2_text = strip_unwanted_chars(thumb_meta.get("row2_text", "বিশাল নিয়োগ"))
     sub_text = strip_unwanted_chars(thumb_meta.get("sub_text", "SSC/HSC পাশ যোগ্যতা"))
@@ -197,18 +268,15 @@ def generate_dynamic_thumbnail(title, output_path, thumb_meta=None):
     bar_font = get_fixed_bar_font()
     font_line1, font_line2 = get_two_distinct_middle_fonts()
 
-    # নির্দিষ্ট প্রতিষ্ঠান লোগো চেকিং
-    matched_logo = find_matched_org_logo(title) or find_matched_org_logo(top_text)
-
     # =========================================================================
     # 🌟 ১. স্পেশাল অর্গানাইজেশন ডিজাইন (৩টি টেক্সট বক্স + ডানপাশে বড় লোগো)
+    #    (কীওয়ার্ড ম্যাচ করলে বক্স হবে গাঢ় কালো এবং ভেতরের লেখা সাদা)
     # =========================================================================
     if matched_logo and os.path.exists(matched_logo):
-        theme = random.choice(VIBRANT_PALETTES)
-        print(f"✨ [Special Org Thumbnail] Detected Logo: {os.path.basename(matched_logo)} for '{title[:40]}'...")
+        print(f"✨ [Special Org Thumbnail] Detected Logo: {os.path.basename(matched_logo)} for '{title[:40]}' (Govt: Black Bar & White Text)...")
 
-        # টপ বার (0 to 200px)
-        draw.rectangle([0, 0, W, 200], fill=theme["bar_bg"])
+        # টপ বার (0 to 200px) - গাঢ় কালো
+        draw.rectangle([0, 0, W, 200], fill=bar_bg)
         gov_logo_p = os.path.join(PHOTOS_DIR, "Govbd.png")
         if os.path.exists(gov_logo_p):
             try:
@@ -219,53 +287,57 @@ def generate_dynamic_thumbnail(title, output_path, thumb_meta=None):
             except Exception: pass
 
         fs_top, _ = get_best_fitted_mixed_font_size(top_text, max_w=W - 420, max_h=160, bn_font_path=bar_font, start_size=170, min_size=80)
-        draw_mixed_text_centered(draw, W // 2, 100, top_text, bar_font, fs_top, theme["bar_text"])
+        draw_mixed_text_centered(draw, W // 2, 100, top_text, bar_font, fs_top, bar_text_color)
 
         split_x = 1260
 
-        # 🌟 ডানপাশের লোগো বক্সে নিশ্চিতভাবে লোগো ড্র করা
+        # ডানপাশের লোগো বক্সে লোগো ড্র করা
         render_logo_to_box(img, matched_logo, (split_x, 200, W, 880))
 
-        # বামে ৩টি স্ট্যাকড সম্পূর্ণ আলাদা টেক্সট বক্স
+        # বামে ৩টি স্ট্যাকড সম্পূর্ণ আলাদা টেক্সট বক্স (মাঝখানের ডিজাইন আগের মতোই রয়েছে)
         # বক্স ১: হলুদ সাব-হুক (200 to 380px)
-        draw.rectangle([0, 200, split_x, 380], fill=theme["sub_bg"])
+        draw.rectangle([0, 200, split_x, 380], fill="#ffea00")
         fs_b1, _ = get_best_fitted_mixed_font_size(row1_text, max_w=split_x - 40, max_h=150, bn_font_path=font_line1, start_size=220, min_size=90)
-        draw_mixed_text_centered(draw, split_x // 2, 290, row1_text, font_line1, fs_b1, theme["sub_text"])
+        draw_mixed_text_centered(draw, split_x // 2, 290, row1_text, font_line1, fs_b1, "#000000")
 
         # বক্স ২: সাদা ব্যাকগ্রাউন্ডে বিশাল লাল মেইন হুক (380 to 700px)
         draw.rectangle([0, 380, split_x, 700], fill="#ffffff")
         fs_b2, _ = get_best_fitted_mixed_font_size(row2_text, max_w=split_x - 40, max_h=280, bn_font_path=font_line2, start_size=330, min_size=120)
-        draw_mixed_text_centered(draw, split_x // 2, 540, row2_text, font_line2, fs_b2, theme["hook_text"])
+        draw_mixed_text_centered(draw, split_x // 2, 540, row2_text, font_line2, fs_b2, "#d80000")
 
         # বক্স ৩: হলুদ সাব-লাইন (700 to 880px)
-        draw.rectangle([0, 700, split_x, 880], fill=theme["sub_bg"])
+        draw.rectangle([0, 700, split_x, 880], fill="#ffea00")
         fs_b3, _ = get_best_fitted_mixed_font_size(sub_text, max_w=split_x - 40, max_h=150, bn_font_path=font_line1, start_size=200, min_size=80)
-        draw_mixed_text_centered(draw, split_x // 2, 790, sub_text, font_line1, fs_b3, theme["sub_text"])
+        draw_mixed_text_centered(draw, split_x // 2, 790, sub_text, font_line1, fs_b3, "#000000")
 
         # বর্ডার ও সেপারেটর লাইন
-        draw.line([(split_x, 200), (split_x, 880)], fill=theme["border"], width=7)
-        draw.line([(0, 380), (split_x, 380)], fill=theme["border"], width=6)
-        draw.line([(0, 700), (split_x, 700)], fill=theme["border"], width=6)
+        draw.line([(split_x, 200), (split_x, 880)], fill=border_color, width=7)
+        draw.line([(0, 380), (split_x, 380)], fill=border_color, width=6)
+        draw.line([(0, 700), (split_x, 700)], fill=border_color, width=6)
 
-        # বটম বার (880 to 1080px)
-        draw.rectangle([0, 880, W, H], fill=theme["bar_bg"])
+        # বটম বার (880 to 1080px) - গাঢ় কালো ও সাদা লেখা
+        draw.rectangle([0, 880, W, H], fill=bar_bg)
         fs_bot, _ = get_best_fitted_mixed_font_size(bot_text, max_w=W - 80, max_h=160, bn_font_path=bar_font, start_size=170, min_size=80)
-        draw_mixed_text_centered(draw, W // 2, 980, bot_text, bar_font, fs_bot, theme["bot_text"])
+        draw_mixed_text_centered(draw, W // 2, 980, bot_text, bar_font, fs_bot, bot_text_color)
 
-        draw.line([(0, 200), (W, 200)], fill=theme["border"], width=7)
-        draw.line([(0, 880), (W, 880)], fill=theme["border"], width=7)
+        draw.line([(0, 200), (W, 200)], fill=border_color, width=7)
+        draw.line([(0, 880), (W, 880)], fill=border_color, width=7)
 
     # =========================================================================
     # 🌟 ২. রেগুলার ডিজাইন (ক্লাসিক ফুল ওয়াইড্থ ডিজাইন)
+    #    (সরকারি হলে কালো বার, বেসরকারি হলে হালকা ডার্ক রেড বার, লেখা সাদা)
     # =========================================================================
     else:
-        print(f"📄 [Classic Thumbnail] Regular layout for '{title[:35]}...'")
-        green_bg = "#00521b"
-        
+        job_type_str = "Government (Black Bar)" if is_govt else "Private (Dark Red Bar)"
+        print(f"📄 [Classic Thumbnail] Regular layout for '{title[:35]}...' [{job_type_str}]")
+
         # টপ বার
-        draw.rectangle([0, 0, W, 200], fill=green_bg)
+        draw.rectangle([0, 0, W, 200], fill=bar_bg)
+        
+        # সরকারি চাকরির ক্ষেত্রে সরকারি লোগো যুক্ত হবে
         gov_logo_p = os.path.join(PHOTOS_DIR, "Govbd.png")
-        if os.path.exists(gov_logo_p):
+        has_gov_logo = is_govt and os.path.exists(gov_logo_p)
+        if has_gov_logo:
             try:
                 with Image.open(gov_logo_p) as gl:
                     gl_rgba = gl.convert("RGBA").resize((150, 150), Image.LANCZOS)
@@ -273,10 +345,11 @@ def generate_dynamic_thumbnail(title, output_path, thumb_meta=None):
                     img.paste(gl_rgba, (W - 185, 25), gl_rgba)
             except Exception: pass
 
-        fs_top, _ = get_best_fitted_mixed_font_size(top_text, max_w=W - 420, max_h=160, bn_font_path=bar_font, start_size=170, min_size=80)
-        draw_mixed_text_centered(draw, W // 2, 100, top_text, bar_font, fs_top, "#ffffff")
+        max_top_w = W - 420 if has_gov_logo else W - 80
+        fs_top, _ = get_best_fitted_mixed_font_size(top_text, max_w=max_top_w, max_h=160, bn_font_path=bar_font, start_size=170, min_size=80)
+        draw_mixed_text_centered(draw, W // 2, 100, top_text, bar_font, fs_top, bar_text_color)
 
-        # মিডল সেকশন (ফুল ওয়াইড্থ সাদা ব্যাকগ্রাউন্ড)
+        # মিডল সেকশন (ফুল ওয়াইড্থ সাদা ব্যাকগ্রাউন্ড - আগের মতোই থাকবে)
         draw.rectangle([0, 200, W, 880], fill="#ffffff")
 
         fs_l1, h1 = get_best_fitted_mixed_font_size(row1_text, max_w=W - 80, max_h=340, bn_font_path=font_line1, start_size=330, min_size=130)
@@ -286,19 +359,19 @@ def generate_dynamic_thumbnail(title, output_path, thumb_meta=None):
         total_content_height = h1 + line_spacing + h2
         start_y = 540 - (total_content_height // 2)
 
-        # লাল লাইন ১ (মেইন হুক)
+        # লাল লাইন ১ (মেইন হুক - আগের মতোই উজ্জ্বল লাল)
         draw_mixed_text_centered(draw, W // 2, start_y + (h1 // 2), row1_text, font_line1, fs_l1, "#d80000")
 
-        # কালো লাইন ২ (যোগ্যতা / জেলা)
+        # কালো লাইন ২ (যোগ্যতা / জেলা - আগের মতোই কালো)
         draw_mixed_text_centered(draw, W // 2, start_y + h1 + line_spacing + (h2 // 2), sub_text, font_line2, fs_l2, "#000000")
 
-        # বটম বার
-        draw.rectangle([0, 880, W, H], fill=green_bg)
+        # বটম বার (সরকারি হলে কালো, বেসরকারি হলে হালকা ডার্ক রেড, লেখা সাদা)
+        draw.rectangle([0, 880, W, H], fill=bar_bg)
         fs_bot, _ = get_best_fitted_mixed_font_size(bot_text, max_w=W - 80, max_h=160, bn_font_path=bar_font, start_size=170, min_size=80)
-        draw_mixed_text_centered(draw, W // 2, 980, bot_text, bar_font, fs_bot, "#ffe600")
+        draw_mixed_text_centered(draw, W // 2, 980, bot_text, bar_font, fs_bot, bot_text_color)
 
-        draw.line([(0, 200), (W, 200)], fill="#003310", width=7)
-        draw.line([(0, 880), (W, 880)], fill="#003310", width=7)
+        draw.line([(0, 200), (W, 200)], fill=border_color, width=7)
+        draw.line([(0, 880), (W, 880)], fill=border_color, width=7)
 
     img.save(output_path, "JPEG", quality=100, subsampling=0)
     print(f"✅ Generated Ultra-HD Thumbnail: '{row1_text} | {sub_text} | {bot_text}'")
