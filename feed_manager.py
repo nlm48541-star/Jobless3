@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 WORKSPACE_DIR = "workspace"
-SKIPPED_JSON_FILE = os.path.join(WORKSPACE_DIR, "skipped_articles.json")
+SKIPPED_JSON_FILE = "skipped_articles.json"  # রিপোজিটরির রুটে সংরক্ষণ হবে
 FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'bank', 'চলমান']
 
 HEADERS = {
@@ -15,7 +15,7 @@ HEADERS = {
 }
 
 # =========================================================================
-# 🌟 skipped_articles.json হেল্পার ফাংশনসমূহ
+# 🌟 skipped_articles.json হেল্পার ফাংশনসমূহ (রুট রিপোজিটরির ফাইলে সেভ ও চেক)
 # =========================================================================
 
 def load_skipped_articles():
@@ -25,15 +25,16 @@ def load_skipped_articles():
             with open(SKIPPED_JSON_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception: pass
-    # রুট ডিরেক্টরিতে থাকলে সেখান থেকেও চেক করবে
-    if os.path.exists("skipped_articles.json"):
+    # ব্যাকআপ হিসেবে workspace ফোল্ডারে থাকলে তাও চেক করবে
+    ws_file = os.path.join(WORKSPACE_DIR, "skipped_articles.json")
+    if os.path.exists(ws_file):
         try:
-            with open("skipped_articles.json", "r", encoding="utf-8") as f:
+            with open(ws_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception: pass
     return {}
 
-def is_article_skipped(link, title=""):
+def is_article_skipped(link="", title=""):
     """চেক করে আর্টিকেলটি ইতিমধ্যে অফলাইন হিসেবে চিহ্নিত কিনা"""
     skipped = load_skipped_articles()
     if link and link.strip().lower() in skipped:
@@ -43,7 +44,7 @@ def is_article_skipped(link, title=""):
     return False
 
 def save_skipped_article(link, title, reason="Offline application (ডাকযোগে/কুরিয়ার/সরাসরি)"):
-    """অফলাইন সার্কুলারের লিংক ও কারণ skipped_articles.json ফাইলে পার্মানেন্টলি সেভ করে"""
+    """অফলাইন সার্কুলারের লিংক ও কারণ skipped_articles.json ফাইলে সংরক্ষণ করে"""
     skipped = load_skipped_articles()
     key = link.strip().lower() if link else title.strip().lower()
     if not key: return
@@ -55,13 +56,13 @@ def save_skipped_article(link, title, reason="Offline application (ডাকয�
         "skipped_at": datetime.now().isoformat()
     }
     try:
-        os.makedirs(WORKSPACE_DIR, exist_ok=True)
         with open(SKIPPED_JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(skipped, f, ensure_ascii=False, indent=2)
-        # রুটেও একটি কপি রাখা
+        # workspace এও ব্যাকআপ রাখা
         try:
-            with open("skipped_articles.json", "w", encoding="utf-8") as rf:
-                json.dump(skipped, rf, ensure_ascii=False, indent=2)
+            os.makedirs(WORKSPACE_DIR, exist_ok=True)
+            with open(os.path.join(WORKSPACE_DIR, "skipped_articles.json"), "w", encoding="utf-8") as wf:
+                json.dump(skipped, wf, ensure_ascii=False, indent=2)
         except Exception: pass
         print(f"📋 [OFFLINE TRACKED] Saved '{title[:45]}...' to skipped_articles.json")
     except Exception as e:
@@ -78,6 +79,15 @@ def clean_filename(text):
     text = re.sub(r'[\\/*?:"<>|]', "", str(text))
     text = re.sub(r'\s+', ' ', text).strip()
     return text[:90]
+
+def clean_article_text(raw_html):
+    """এইচটিএমএল থেকে সাধারণ পাঠযোগ্য বাংলা টেক্সট বের করে"""
+    if not raw_html: return ""
+    soup = BeautifulSoup(raw_html, 'html.parser')
+    for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+    return re.sub(r'\s+', ' ', text)[:2500]
 
 def extract_image_urls_from_html(html_content, base_url=""):
     if not html_content: return []
@@ -111,15 +121,18 @@ def extract_image_urls_from_html(html_content, base_url=""):
                             img_urls.append(src)
     return img_urls
 
-def scrape_images_from_webpage(page_url):
+def scrape_webpage(page_url):
+    """ওয়েবপেজ থেকে টেক্সট এবং ইমেজ লিংক উভয়ই বের করে আনে"""
     try:
         req_headers = HEADERS.copy()
         req_headers["Referer"] = page_url
         resp = requests.get(page_url, headers=req_headers, timeout=15)
         if resp.status_code == 200:
-            return extract_image_urls_from_html(resp.text, base_url=page_url)
+            imgs = extract_image_urls_from_html(resp.text, base_url=page_url)
+            txt = clean_article_text(resp.text)
+            return imgs, txt
     except Exception: pass
-    return []
+    return [], ""
 
 def download_image(url, output_path, referer_url=""):
     try:
@@ -173,27 +186,32 @@ def check_new_articles_and_prepare_folders():
                 if folder_title.lower() == "shorts" or not folder_title or folder_title in existing:
                     continue
 
-                # 🌟 ১. পূর্বে আপলোড হওয়া ইতিহাস চেক
+                # ১. পূর্বে আপলোড হওয়া ইতিহাস চেক
                 if link.lower() in history_logs or raw_title.lower() in history_logs or folder_title.lower() in history_logs:
                     continue
 
-                # 🌟 ২. পূর্বে অফলাইন হিসেবে চিহ্নিত হয়ে থাকলে সরাসরি স্কিপ
+                # 🌟 ২. পূর্বে অফলাইন হিসেবে চিহ্নিত হয়ে থাকলে সঙ্গে সঙ্গে স্কিপ (কোনো ডাউনলোডের দরকার নেই)
                 if is_article_skipped(link, raw_title) or is_article_skipped(link, folder_title):
-                    print(f"⏩ [OFFLINE FILTER] Skipping '{folder_title}' (Already in skipped_articles.json).")
+                    print(f"⏩ [OFFLINE FILTER] Skipping '{folder_title}' (Already listed in skipped_articles.json).")
                     continue
 
                 # ৩. টাইটেলে নিষিদ্ধ কিওয়ার্ড ফিল্টার
                 if is_forbidden_article(raw_title) or is_forbidden_article(folder_title):
-                    print(f"🚫 [FILTERED] Skipping '{folder_title}' (Title contains forbidden keywords).")
+                    print(f"🚫 [FILTERED] Skipping '{folder_title}' (Forbidden keyword).")
                     continue
 
                 content = entry.content[0].value if hasattr(entry, 'content') else getattr(entry, 'summary', "")
+                article_text = clean_article_text(content)
                 valid_img_urls = extract_image_urls_from_html(content, base_url=link)
-                if not valid_img_urls and link:
-                    valid_img_urls = scrape_images_from_webpage(link)
+
+                # যদি আরএসএসে ইমেজ বা টেক্সট কম থাকে তবে ওয়েবপেজ স্ক্র্যাপ করা
+                if (not valid_img_urls or len(article_text) < 100) and link:
+                    web_imgs, web_text = scrape_webpage(link)
+                    if not valid_img_urls: valid_img_urls = web_imgs
+                    if len(web_text) > len(article_text): article_text = web_text
 
                 if not valid_img_urls:
-                    print(f"⏩ Skipping '{folder_title}' (No images found in article).")
+                    print(f"⏩ Skipping '{folder_title}' (No images found).")
                     continue
 
                 folder_path = os.path.join(WORKSPACE_DIR, folder_title)
@@ -232,11 +250,16 @@ def check_new_articles_and_prepare_folders():
                     shutil.rmtree(folder_path, ignore_errors=True)
                     continue
 
+                # ফাইল সংরক্ষণ
                 with open(os.path.join(folder_path, "title.txt"), "w", encoding="utf-8") as tf:
                     tf.write(raw_title)
                 if link:
                     with open(os.path.join(folder_path, "link.txt"), "w", encoding="utf-8") as lf:
                         lf.write(link)
+                # 🌟 আর্টিকেলের মূল টেক্সট সংরক্ষণ (এআই যেন নিশ্চিতভাবে পড়তে পারে)
+                if article_text:
+                    with open(os.path.join(folder_path, "content.txt"), "w", encoding="utf-8") as cf:
+                        cf.write(article_text)
 
                 print(f"✅ Prepared New Article: {folder_title} ({final_img_count} Images)")
                 existing.append(folder_title)
