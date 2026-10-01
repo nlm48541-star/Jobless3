@@ -48,7 +48,7 @@ def process_ready_videos(yt):
                 shutil.rmtree(folder_path, ignore_errors=True)
                 continue
 
-            existing_audio_file, txt_path, link_path = None, None, None
+            existing_audio_file, txt_path, link_path, content_path = None, None, None, None
             img_files = []
             
             for file in sorted(os.listdir(folder_path)):
@@ -59,6 +59,8 @@ def process_ready_videos(yt):
                     txt_path = os.path.join(folder_path, file)
                 elif file.lower() == "link.txt":
                     link_path = os.path.join(folder_path, file)
+                elif file.lower() == "content.txt":
+                    content_path = os.path.join(folder_path, file)
                 elif ext in ['jpg', 'jpeg', 'png', 'webp']: 
                     img_files.append(os.path.join(folder_path, file))
                     
@@ -80,7 +82,14 @@ def process_ready_videos(yt):
                         article_link = lf.read().strip()
                 except Exception: pass
 
-            # 🌟 চেক ১: আর্টিকেলটি ইতিমধ্যে অফলাইন হিসেবে চিহ্নিত কিনা
+            article_text = ""
+            if content_path and os.path.exists(content_path):
+                try:
+                    with open(content_path, 'r', encoding='utf-8') as cf:
+                        article_text = cf.read().strip()
+                except Exception: pass
+
+            # 🌟 চেক ১: আর্টিকেলটি পূর্বে কোনো রানে অফলাইন হিসেবে চিহ্নিত হয়ে আছে কিনা
             if is_article_skipped(article_link, raw_title):
                 print(f"⏩ [OFFLINE SKIP] '{folder_name}' is already in skipped_articles.json. Deleting folder.")
                 shutil.rmtree(folder_path, ignore_errors=True)
@@ -92,16 +101,17 @@ def process_ready_videos(yt):
 
             print(f"\n========== Process started: {folder_name} ==========")
 
-            # 🌟 চেক ২: এআই ইমেজ ও টেক্সট স্ক্যান করে অনলাইন নাকি অফলাইন যাচাই করবে
-            ai_res = generate_job_content(raw_title, img_files)
+            # 🌟 চেক ২: এআই ইমেজ ও টেক্সট উভয়েই স্ক্যান করে অনলাইন নাকি অফলাইন নিশ্চিত করবে
+            ai_res = generate_job_content(raw_title, img_files, article_text=article_text)
             opt_title, voiceover_script, thumb_meta, video_desc, video_tags, app_type, off_reason = ai_res
 
-            # 🚫 যদি অফলাইন (ডাকযোগে/কুরিয়ার/সরাসরি) নিশ্চিত হয়:
+            # 🚫 যদি অফলাইন (ডাকযোগে/কুরিয়ার/সরাসরি) নিশ্চিত হয়: ভিডিও তৈরি হবে না
             if app_type == "offline":
                 print(f"🚫 [OFFLINE REJECTED] '{folder_name}' requires physical/postal application ({off_reason}).")
+                # রিপোজিটরির json ফাইলে সেভ করে রাখা
                 save_skipped_article(article_link, raw_title, off_reason)
                 shutil.rmtree(folder_path, ignore_errors=True)
-                print(f"🗑️ Deleted offline circular folder '{folder_name}'. Video creation aborted.\n")
+                print(f"🗑️ Deleted offline circular folder '{folder_name}'. Video creation skipped.\n")
                 continue
 
             if not opt_title:
