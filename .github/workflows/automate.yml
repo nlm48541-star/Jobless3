@@ -1,102 +1,27 @@
-name: RSS Video Automation System
-
-on:
-  repository_dispatch:
-    types: [rss_video_check] 
-  workflow_dispatch: 
-
-# 🌟 কনকারেন্সি লক: যাতে একাধিক রান একসাথে কিউ হয়ে আটকে না থাকে
-concurrency:
-  group: rss-automation-jobless
-  cancel-in-progress: true
-
-# 🌟 রিপোজিটরিতে ফাইল কমিট করার পারমিশন
-permissions:
-  contents: write
-
-jobs:
-  run-automation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-
-      - name: Install System Dependencies (Fonts, FFmpeg, Rclone)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg rclone
-
-      - name: Install Python Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Configure Rclone (Secure Quote Handling)
-        shell: python
-        env:
-          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
-        run: |
-          import os
-          config_path = os.path.expanduser('~/.config/rclone/rclone.conf')
-          os.makedirs(os.path.dirname(config_path), exist_ok=True)
-          with open(config_path, 'w', encoding='utf-8') as f:
-              f.write(os.environ['RCLONE_CONF_DATA'])
-
-      - name: Download Files from Google Drive
-        run: |
-          mkdir -p workspace
-          rclone sync "gdrive:" ./workspace --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --fast-list
-
+# 🌟 সমস্ত প্রয়োজনীয় এআই এবং অডিও API Secrets পাস করা হয়েছে
       - name: Run Python Process (Movie & YouTube upload)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
           GDRIVE_PARENT_FOLDER_ID: ${{ secrets.GDRIVE_PARENT_FOLDER_ID }}
-          GROQ_API: ${{ secrets.GROQ_API }}
-          Ollama_API_Key: ${{ secrets.Ollama_API_Key }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          FISH_API_KEYS: ${{ secrets.FISH_API_KEYS }}
-          FISH_VOICE_ID: ${{ secrets.FISH_VOICE_ID }}
-          MODAL_ENDPOINTS: ${{ secrets.MODAL_ENDPOINTS }}
-          TTS_MODEL: ${{ secrets.TTS_MODEL }}
-          TTS_ENGINE: ${{ secrets.TTS_ENGINE }}
+          # AI Cloud Platforms
+          OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
+          OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
+          # Audio TTS Platforms
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_VOICE_ID: ${{ secrets.GEMINI_VOICE_ID }}
           ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python main.py
 
-      # 🌟 অফলাইন আর্টিকেলের লিস্ট রিপোজিটরিতে অটো-কমিট ও পুশ
-      - name: Commit & Push Skipped Articles JSON
+      # 🌟 অফলাইন আর্টিকেলের লিস্ট ও এপিআই ট্র্যাকার কমিট করা
+      - name: Commit & Push Skipped Articles and API Tracker
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add skipped_articles.json || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update skipped offline circulars [skip ci]" && git push) || true
-
-      - name: Push updates back to Google Drive (Permanent Folder Cleanup)
-        if: always()
-        run: |
-          rclone sync ./workspace "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --drive-use-trash=false --fast-list
-          rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --leave-root || true
-
-      - name: Push JobLive videos to Google Drive
-        if: always()
-        run: |
-          if [ -d "workspace_live" ]; then
-            rclone copy ./workspace_live "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --fast-list
-          fi
-
-      - name: Cleanup old JobLive videos (Older than 30 days)
-        if: always()
-        run: |
-          rclone delete "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --min-age 30d --fast-list || true
+          git add skipped_articles.json api_tracker.json || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update tracker and skipped articles [skip ci]" && git push) || true
