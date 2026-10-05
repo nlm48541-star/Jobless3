@@ -211,7 +211,7 @@ def parse_json_safely(raw_text):
     except Exception:
         return None
 
-def build_final_response(data, vac_str, qual_str, org_name, num_images=1):
+def build_final_response(data, vac_str, qual_str, org_name, num_images=1, custom_script=""):
     opt_title = normalize_outdated_years(data.get("optimized_title", "").strip()[:100])
     desc = normalize_outdated_years(data.get("video_description", "").strip())
     raw_tags = data.get("specific_tags", []) + DEFAULT_BASE_TAGS
@@ -229,7 +229,36 @@ def build_final_response(data, vac_str, qual_str, org_name, num_images=1):
         "bot_text": strip_unwanted_chars(gen_bot)
     }
 
-    # 🌟 সিন (Scene) ও ভিজুয়াল ম্যাপিং প্রসেসিং
+    # 🌟 কাস্টম স্ক্রিপ্ট থাকলে সেটাই সরাসরি ব্যবহার হবে
+    if custom_script:
+        clean_custom = convert_all_numbers_in_script(normalize_outdated_years(custom_script))
+        # দৃশ্যপটের জন্য নিরাপদ ফলব্যাক সিন তৈরি
+        processed_scenes = []
+        scenes_raw = data.get("scenes", [])
+        if isinstance(scenes_raw, list) and len(scenes_raw) > 0:
+            for idx, sc in enumerate(scenes_raw):
+                raw_text = sc.get("text", "").strip()
+                if not raw_text: continue
+                clean_part = convert_all_numbers_in_script(normalize_outdated_years(raw_text))
+                img_idx = int(sc.get("image_index", 0)) % max(1, num_images)
+                crop_box = sc.get("crop_box", [0, 100])
+                processed_scenes.append({
+                    "title": sc.get("section_title", f"Scene {idx+1}"),
+                    "text": clean_part,
+                    "image_index": img_idx,
+                    "crop_box": [max(0, float(crop_box[0])), min(100, float(crop_box[1]))]
+                })
+
+        if not processed_scenes:
+            processed_scenes = [{
+                "title": "বিজ্ঞপ্তি বিবরণ",
+                "text": clean_custom,
+                "image_index": 0,
+                "crop_box": [0, 100]
+            }]
+        return opt_title, clean_custom, thumb_meta, desc, tags, processed_scenes
+
+    # অটোমেটিক এআই স্ক্রিপ্ট প্রসেসিং
     scenes_raw = data.get("scenes", [])
     processed_scenes = []
     full_script_parts = []
@@ -253,7 +282,6 @@ def build_final_response(data, vac_str, qual_str, org_name, num_images=1):
                 "crop_box": [max(0, float(crop_box[0])), min(100, float(crop_box[1]))]
             })
 
-    # যদি কোনো কারণে সিন না থাকে, সরাসরি স্ক্রিপ্ট থেকে ফলব্যাক সিন তৈরি
     if not processed_scenes:
         fallback_script = convert_all_numbers_in_script(normalize_outdated_years(data.get("voiceover_script", "")))
         full_script_parts = [fallback_script]
@@ -271,7 +299,7 @@ def build_final_response(data, vac_str, qual_str, org_name, num_images=1):
 # 🌟 এআই ইঞ্জিন ক্যাস্কেড (OpenRouter -> Groq -> Cerebras -> Ollama)
 # =========================================================================
 
-def generate_job_content(title, img_paths, article_text=""):
+def generate_job_content(title, img_paths, article_text="", custom_script=""):
     clean_title = clean_title_for_display(title)
     words = clean_title.split()
     org_name = clean_title.split("নিয়োগ")[0].strip() if "নিয়োগ" in clean_title else " ".join(words[:min(3, len(words))])
@@ -279,8 +307,43 @@ def generate_job_content(title, img_paths, article_text=""):
     snippet_text = article_text[:2500].strip() if article_text else "None provided"
     total_imgs = len(img_paths)
 
-    # 🌟 এআই-কে ছবি অনুযায়ী পদ ও কোঅর্ডিনেট ম্যাপিং করার কড়া প্রম্পট
-    prompt = f"""You are a professional Bengali YouTube career counselor, video scriptwriter, and circular image visual grounding specialist.
+    # 🌟 কাস্টম স্ক্রিপ্ট থাকলে প্রম্পট শুধু মেটাডাটা ও সিন বানাবে, নতুন স্ক্রিপ্ট লিখবে না
+    if custom_script:
+        prompt = f"""You are a professional YouTube SEO specialist and visual grounding assistant.
+Context:
+- Job Circular Title: "{clean_title}"
+- Organization: "{org_name}"
+- Scraped Details: "{snippet_text}"
+- Number of Circular Image Pages: {total_imgs}
+- User Provided Script: "{custom_script[:2500]}"
+
+IMPORTANT:
+The user has provided their own custom voiceover script. DO NOT write or replace the script.
+Your task:
+1. Provide an optimized YouTube title, description, tags, and thumbnail texts.
+2. Break down the user's provided script into scenes and map each part to the circular image coordinates (crop_box [top_percent, bottom_percent]).
+
+Return strictly valid JSON:
+{{
+  "optimized_title": "...",
+  "video_description": "...",
+  "specific_tags": ["..."],
+  "top_text": "...",
+  "row1_text": "...",
+  "row2_text": "...",
+  "sub_text": "...",
+  "bot_text": "...",
+  "scenes": [
+    {{
+      "section_title": "...",
+      "text": "Exact text chunk from user script",
+      "image_index": 0,
+      "crop_box": [10, 40]
+    }}
+  ]
+}}"""
+    else:
+        prompt = f"""You are a professional Bengali YouTube career counselor, video scriptwriter, and circular image visual grounding specialist.
 Context:
 - Job Circular Title: "{clean_title}"
 - Organization: "{org_name}"
@@ -303,8 +366,7 @@ You must break down the job circular into structured SCENES. Each scene correspo
 2. VISUAL GROUNDING (crop_box):
    - For each scene, specify:
      * "image_index": 0 for 1st page, 1 for 2nd page, etc.
-     * "crop_box": [top_percent, bottom_percent] indicating the vertical percentage (0 to 100) where that specific post/table row is located on the circular image!
-       (e.g., Intro/Header: [0, 25], Post 1: [20, 45], Post 2: [40, 65], Post 3: [60, 85], Outro/Footer: [75, 100])
+     * "crop_box": [top_percent, bottom_percent] indicating the vertical percentage (0 to 100) where that specific post/table row is located on the circular image.
 
 Return strictly valid JSON:
 {{
@@ -322,8 +384,7 @@ Return strictly valid JSON:
       "text": "এই পদে যেসব কাজ করতে হবে এবং যেসব যোগ্যতা লাগবে...",
       "image_index": 0,
       "crop_box": [15, 38]
-    }},
-    ...
+    }}
   ]
 }}"""
 
@@ -363,8 +424,8 @@ Return strictly valid JSON:
                         data = parse_json_safely(raw_c)
                         if data and data.get("optimized_title"):
                             save_tracker_index("openrouter", cur_idx, total_or)
-                            print(f"✨ [SUCCESS: OpenRouter] Grounded 10-Min Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs)
+                            print(f"✨ [SUCCESS: OpenRouter] Grounded Scenes via Key #{cur_idx+1} ({model})!")
+                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
                     elif resp.status_code in [401, 402, 429]:
                         print(f"⚠️ OpenRouter Key #{cur_idx+1} exhausted ({resp.status_code}). Trying next key...")
                         break
@@ -390,106 +451,8 @@ Return strictly valid JSON:
                 payload = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": "You are a professional Bengali career counselor. Output strictly valid JSON with grounded scene coordinates."},
+                        {"role": "system", "content": "You are a professional career counselor. Output strictly valid JSON with grounded scene coordinates."},
                         {"role": "user", "content": prompt}
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature": 0.5,
-                    "max_tokens": 6000
-                }
-                try:
-                    resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=75)
-                    if resp.status_code == 200:
-                        raw_c = resp.json()['choices'][0]['message']['content']
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("groq", cur_idx, total_g)
-                            print(f"✨ [SUCCESS: Groq Cloud] Grounded 10-Min Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs)
-                    elif resp.status_code in [401, 429]:
-                        print(f"⚠️ Groq Key #{cur_idx+1} limit reached ({resp.status_code}).")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Groq error: {e}")
-                    break
-
-            save_tracker_index("groq", cur_idx + 1, total_g)
-
-    # ------------------ [৩য় প্ল্যাটফর্ম: Cerebras Cloud (Priority 3)] ------------------
-    cerebras_keys = parse_keys_from_env("CEREBRAS_API_KEYS", "CEREBRAS_API_KEY")
-    total_c = len(cerebras_keys)
-    if total_c > 0:
-        print("\n🔄 Switching to Cerebras Cloud (Priority 3)...")
-        start_idx = get_tracker_index("cerebras", total_c)
-        for offset in range(total_c):
-            cur_idx = (start_idx + offset) % total_c
-            key = cerebras_keys[cur_idx]
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-            for model in CEREBRAS_MODELS:
-                print(f"🤖 [Cerebras Key #{cur_idx+1}/{total_c}] Model: '{model}'...")
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "Output strictly valid JSON with structured scenes and visual crop box percentages."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.5,
-                    "max_tokens": 6000
-                }
-                try:
-                    resp = requests.post(CEREBRAS_API_URL, headers=headers, json=payload, timeout=75)
-                    if resp.status_code == 200:
-                        raw_c = resp.json()['choices'][0]['message']['content']
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("cerebras", cur_idx, total_c)
-                            print(f"✨ [SUCCESS: Cerebras Cloud] Grounded 10-Min Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs)
-                    elif resp.status_code in [401, 429]:
-                        print(f"⚠️ Cerebras Key #{cur_idx+1} limit reached ({resp.status_code}).")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Cerebras error: {e}")
-                    break
-
-            save_tracker_index("cerebras", cur_idx + 1, total_c)
-
-    # ------------------ [৪র্থ প্ল্যাটফর্ম: Ollama Cloud (Priority 4 / Last)] ------------------
-    ollama_keys = parse_keys_from_env("OLLAMA_API_KEYS", "Ollama_API_Key", "OLLAMA_API_KEY")
-    total_o = len(ollama_keys)
-    if total_o > 0:
-        print("\n🔄 Switching to Ollama Cloud (Priority 4 / Last)...")
-        start_idx = get_tracker_index("ollama", total_o)
-        for offset in range(total_o):
-            cur_idx = (start_idx + offset) % total_o
-            key = ollama_keys[cur_idx]
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-
-            for model in OLLAMA_MODELS:
-                print(f"🤖 [Ollama Key #{cur_idx+1}/{total_o}] Model: '{model}' for '{clean_title[:35]}'...")
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt, "images": base64_images}],
-                    "stream": False,
-                    "options": {"temperature": 0.5, "num_predict": 6000}
-                }
-                try:
-                    resp = requests.post(f"{OLLAMA_API_URL}/api/chat", headers=headers, json=payload, timeout=90)
-                    if resp.status_code == 200:
-                        raw_c = resp.json().get("message", {}).get("content", "").strip()
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("ollama", cur_idx, total_o)
-                            print(f"✨ [SUCCESS: Ollama Cloud] Grounded 10-Min Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs)
-                    elif resp.status_code in [401, 403, 429]:
-                        print(f"⚠️ Ollama Key #{cur_idx+1} limit reached ({resp.status_code}).")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Ollama network error on Key #{cur_idx+1}: {e}")
-                    break
-
-            save_tracker_index("ollama", cur_idx + 1, total_o)
-
-    return None, None, None, None, None, []
+                    "temperature":
