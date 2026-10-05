@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-import os, json, shutil, traceback
+import os, json, shutil, traceback, re, requests
+from bs4 import BeautifulSoup
 from feed_manager import (
     check_new_articles_and_prepare_folders, clean_filename, is_forbidden_article, 
-    WORKSPACE_DIR
+    WORKSPACE_DIR, scrape_webpage, download_image
 )
 from ai_service import generate_job_content
 from audio_engine import generate_voiceover_audio_pipeline
@@ -12,6 +13,7 @@ from youtube_uploader import get_youtube_service, upload_to_youtube
 
 TMP_DIR = "temp_assets"
 LIVESTREAM_DIR = "workspace_live"
+MANUAL_WORKSPACE_DIR = "workspace_manual"
 HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
 
 def add_to_history(entry_text):
@@ -32,8 +34,163 @@ def add_to_history(entry_text):
             print(f"📝 [HISTORY] Saved: '{clean_val[:60]}'")
         except Exception: pass
 
+# =========================================================================
+# 🌟 ইমার্জেন্সি ম্যানুয়াল ফোল্ডার প্রসেসর
+# =========================================================================
+
+def process_manual_folder(yt):
+    enable_manual = os.environ.get("ENABLE_MANUAL_FOLDER", "false").strip().lower() == "true"
+    if not enable_manual:
+        print("ℹ️ [MANUAL FOLDER] Feature is disabled (ENABLE_MANUAL_FOLDER != 'true').")
+        return
+
+    if not os.path.exists(MANUAL_WORKSPACE_DIR):
+        return
+
+    files_in_manual = [f for f in os.listdir(MANUAL_WORKSPACE_DIR) if f != ".keep"]
+    if not files_in_manual:
+        print("ℹ️ [MANUAL FOLDER] Folder is empty. Skipping manual processing.")
+        return
+
+    print("\n" + "="*65)
+    print("🚨 [MANUAL OVERRIDE] Emergency Google Drive Folder Detected!")
+    print(f"📁 Files found: {files_in_manual}")
+    print("="*65)
+
+    if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
+
+    txt_title, article_link, custom_script, custom_thumb, existing_audio = "", "", "", None, None
+    img_files = []
+
+    # ১. ফোল্ডারের ফাইলগুলো শনাক্ত করা
+    for f in sorted(files_in_manual):
+        full_p = os.path.join(MANUAL_WORKSPACE_DIR, f)
+        f_lower = f.lower()
+
+        if f_lower in ["thumbnail.jpg", "thumbnail.png", "thumbnail.jpeg"]:
+            custom_thumb = full_p
+        elif f_lower == "script.txt":
+            try:
+                with open(full_p, "r", encoding="utf-8") as sf:
+                    custom_script = sf.read().strip()
+                print("📄 [MANUAL SCRIPT] Custom script.txt found! AI script generation will be BYPASSSED.")
+            except Exception: pass
+        elif f_lower == "title.txt":
+            try:
+                with open(full_p, "r", encoding="utf-8") as tf:
+                    txt_title = tf.read().strip()
+            except Exception: pass
+        elif f_lower == "link.txt":
+            try:
+                with open(full_p, "r", encoding="utf-8") as lf:
+                    article_link = lf.read().strip()
+            except Exception: pass
+        elif f_lower.split('.')[-1] in ['mp3', 'wav', 'm4a', 'aac']:
+            existing_audio = full_p
+        elif f_lower.split('.')[-1] in ['jpg', 'jpeg', 'png', 'webp']:
+            if not f_lower.startswith("front") and "thumb" not in f_lower:
+                img_files.append(full_p)
+
+    # ২. যদি link.txt থাকে, ওয়েবপেজ থেকে টেক্সট ও অতিরিক্ত ছবি স্ক্র্যাপ করা
+    article_text = ""
+    if article_link:
+        print(f"🌐 [LINK DETECTED] Scraping circular details from: {article_link}")
+        web_imgs, web_text = scrape_webpage(article_link)
+        article_text = web_text
+
+        # টাইটেল না থাকলে ওয়েবপেজের টাইটেল ব্যবহার করা
+        if not txt_title:
+            try:
+                resp = requests.get(article_link, timeout=10)
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                txt_title = soup.find('title').get_text().strip() if soup.find('title') else ""
+            except Exception: pass
+
+        # ফোল্ডারে ছবি কম বা না থাকলে ওয়েবসাইট থেকে ডাউনলোড করা
+        if not img_files and web_imgs:
+            print(f"📥 Downloading {len(web_imgs)} circular images from link...")
+            for idx, img_url in enumerate(web_imgs, start=1):
+                save_p = os.path.join(MANUAL_WORKSPACE_DIR, f"scraped_{idx}.jpg")
+                if download_image(img_url, save_p, referer_url=article_link):
+                    img_files.append(save_p)
+
+    raw_title = txt_title if txt_title else ("জরুরি নিয়োগ বিজ্ঞপ্তি" if not img_files else "নিয়োগ বিজ্ঞপ্তি")
+
+    if not img_files:
+        print("❌ [ERROR] No circular images found in manual folder or webpage. Cannot create video.")
+        return
+
+    # ৩. এআই কন্টেন্ট ও পদভিত্তিক সিন তৈরি (স্ক্রিপ্ট দেওয়া থাকলে হুবহু তাই ব্যবহার হবে)
+    print(f"\n🎬 Processing Manual Circular: '{raw_title[:45]}'")
+    ai_res = generate_job_content(raw_title, img_files, article_text=article_text, custom_script=custom_script)
+    opt_title, voiceover_script, thumb_meta, video_desc, video_tags, scenes = ai_res
+
+    video_title = opt_title if opt_title else raw_title
+
+    # ৪. অডিও তৈরি
+    if existing_audio:
+        audio_path = existing_audio
+        print(f"🎵 Using pre-existing audio: '{os.path.basename(existing_audio)}'")
+    else:
+        if not voiceover_script:
+            print("❌ [ERROR] Voiceover script is empty.")
+            return
+        gen_audio_path = os.path.join(TMP_DIR, "manual_voiceover.mp3")
+        audio_success = generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path)
+        if not audio_success or not os.path.exists(gen_audio_path):
+            print("❌ [ERROR] Audio generation failed.")
+            return
+        audio_path = gen_audio_path
+
+    # ৫. থাম্বনেইল নির্বাচন (কাস্টম থাম্বনেইল থাকলে তাই ব্যবহার হবে)
+    final_thumb_path = None
+    if custom_thumb and os.path.exists(custom_thumb):
+        print(f"🖼️ [CUSTOM THUMBNAIL] Using provided '{os.path.basename(custom_thumb)}' directly! Auto-generator bypassed.")
+        final_thumb_path = custom_thumb
+    else:
+        gen_thumb_path = os.path.join(TMP_DIR, "manual_thumbnail.jpg")
+        if os.path.exists(gen_thumb_path): os.remove(gen_thumb_path)
+        generate_dynamic_thumbnail(raw_title, gen_thumb_path, thumb_meta=thumb_meta)
+        final_thumb_path = gen_thumb_path if os.path.exists(gen_thumb_path) else None
+
+    # ৬. ভিডিও রেন্ডারিং
+    out_video_file = os.path.join(TMP_DIR, "manual_final_out.mp4")
+    if os.path.exists(out_video_file): os.remove(out_video_file)
+
+    print("Rendering 16:9 Landscape Synchronized Video for YouTube...")
+    render_grounded_video(audio_path, img_files, scenes, out_video_file, is_vertical=False)
+
+    # ৭. ইউটিউবে আপলোড (হিস্ট্রি বাইপাস করে সরাসরি আপলোড)
+    upload_success = upload_to_youtube(
+        yt, out_video_file, video_title, 
+        final_thumb_path,
+        description=video_desc,
+        tags=video_tags,
+        schedule_upload=True
+    )
+
+    if upload_success:
+        add_to_history(raw_title)
+        if article_link: add_to_history(article_link)
+
+        try:
+            if not os.path.exists(LIVESTREAM_DIR): os.makedirs(LIVESTREAM_DIR, exist_ok=True)
+            safe_name = clean_filename(video_title)[:45].strip()
+            live_video_file = os.path.join(LIVESTREAM_DIR, f"{safe_name}.mp4")
+            render_grounded_video(audio_path, img_files, scenes, live_video_file, is_vertical=True)
+        except Exception: pass
+
+        # ৮. লোকাল ম্যানুয়াল ফোল্ডার ক্লিনআপ
+        shutil.rmtree(MANUAL_WORKSPACE_DIR, ignore_errors=True)
+        os.makedirs(MANUAL_WORKSPACE_DIR, exist_ok=True)
+        print("✅ [MANUAL OVERRIDE] Manual job finished and uploaded successfully!\n")
+
+# =========================================================================
+# 🌟 সাধারণ অটোমেটিক ভিডিও প্রসেসর (Regular RSS Jobs)
+# =========================================================================
+
 def process_ready_videos(yt):
-    print("\nScanning Drive folders for Videos / AI Processing...")
+    print("\nScanning Drive folders for Regular RSS Videos...")
     if not os.path.exists(WORKSPACE_DIR): return
     if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
 
@@ -94,7 +251,6 @@ def process_ready_videos(yt):
 
             print(f"\n========== Process started: {folder_name} ==========")
 
-            # 🌟 এআই কন্টেন্ট ও পদভিত্তিক সিন জেনারেশন
             ai_res = generate_job_content(raw_title, img_files, article_text=article_text)
             opt_title, voiceover_script, thumb_meta, video_desc, video_tags, scenes = ai_res
 
@@ -104,10 +260,9 @@ def process_ready_videos(yt):
 
             video_title = opt_title
 
-            # অডিও তৈরি
             if existing_audio_file:
                 audio_path = os.path.join(folder_path, existing_audio_file)
-                print(f"🎵 [PRE-EXISTING AUDIO] Using '{existing_audio_file}' directly.")
+                print(f"🎵 Using pre-existing audio: '{existing_audio_file}'")
             else:
                 gen_audio_path = os.path.join(folder_path, "voiceover.mp3")
                 audio_success = generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path)
@@ -115,7 +270,6 @@ def process_ready_videos(yt):
                     continue
                 audio_path = gen_audio_path
 
-            # থাম্বনেইল তৈরি
             thumbnail_path = os.path.join(TMP_DIR, "thumbnail.jpg")
             if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
             generate_dynamic_thumbnail(raw_title, thumbnail_path, thumb_meta=thumb_meta)
@@ -123,7 +277,6 @@ def process_ready_videos(yt):
             out_video_file = os.path.join(TMP_DIR, "final_out.mp4")
             if os.path.exists(out_video_file): os.remove(out_video_file)
 
-            # 🌟 অডিও বক্তব্যের সাথে মিলিয়ে নির্দিষ্ট অংশ জুম করে সিন-ভিত্তিক রেন্ডারিং
             print("Rendering 16:9 Landscape Synchronized Video for YouTube...")
             render_grounded_video(audio_path, img_files, scenes, out_video_file, is_vertical=False)
             
@@ -182,6 +335,12 @@ if __name__ == "__main__":
     print("\n====== [ Google Drive Bot Active | Auto Grounded Video Creator ] ======\n")
     try:
         yt_service = get_youtube_service()
+
+        # 🌟 ১. সবার আগে ইমার্জেন্সি ম্যানুয়াল ড্রাইভ ফোল্ডার প্রসেস করা হবে (সুইচ অন থাকলে)
+        try: process_manual_folder(yt_service)
+        except Exception: traceback.print_exc()
+
+        # ২. সাধারণ আরএসএস ফিড চেক ও প্রসেস
         try: check_new_articles_and_prepare_folders()
         except Exception: traceback.print_exc()
 
