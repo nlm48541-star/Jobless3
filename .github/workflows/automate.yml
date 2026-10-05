@@ -48,17 +48,29 @@ jobs:
           with open(config_path, 'w', encoding='utf-8') as f:
               f.write(os.environ['RCLONE_CONF_DATA'])
 
+      # 🌟 ১. সাধারণ ওয়ার্কস্পেস ড্রাইভ সিঙ্ক
       - name: Download Files from Google Drive
         run: |
           mkdir -p workspace
           rclone sync "gdrive:" ./workspace --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --fast-list
 
+      # 🌟 ২. ইমার্জেন্সি ম্যানুয়াল ফোল্ডার ডাউনলোড (যদি ENABLE_MANUAL_FOLDER == 'true' থাকে)
+      - name: Download Manual Emergency Folder from Google Drive
+        if: ${{ secrets.ENABLE_MANUAL_FOLDER == 'true' }}
+        run: |
+          mkdir -p workspace_manual
+          rclone sync "gdrive:" ./workspace_manual --drive-root-folder-id="${{ secrets.MANUAL_DRIVE_FOLDER_ID }}" --fast-list || true
+
+      # 🌟 ৩. মূল পাইথন প্রসেস রান
       - name: Run Python Process (Movie & YouTube upload)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
           GDRIVE_PARENT_FOLDER_ID: ${{ secrets.GDRIVE_PARENT_FOLDER_ID }}
+          
+          # 🚨 Manual Override Switch
+          ENABLE_MANUAL_FOLDER: ${{ secrets.ENABLE_MANUAL_FOLDER }}
           
           # 🤖 AI Platforms (Priority: 1. OpenRouter ➔ 2. Groq ➔ 3. Cerebras ➔ 4. Ollama)
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
@@ -68,7 +80,7 @@ jobs:
           OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
           Ollama_API_Key: ${{ secrets.Ollama_API_Key }}
           
-          # 🎙️ TTS Voice Platforms (Priority: 1. Gemini ➔ 2. ElevenLabs ➔ Edge Backup)
+          # 🎙️ TTS Voice Platforms
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_VOICE_ID: ${{ secrets.GEMINI_VOICE_ID }}
@@ -77,7 +89,14 @@ jobs:
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: python main.py
 
-      # 🌟 এপিআই ট্র্যাকার স্বয়ংক্রিয়ভাবে গিটহাবে সেভ রাখা
+      # 🌟 ৪. রান শেষে ম্যানুয়াল ফোল্ডারের ফাইলগুলো গুগল ড্রাইভ থেকে স্বয়ংক্রিয় ডিলিট করা
+      - name: Cleanup Manual Google Drive Folder
+        if: always() && ${{ secrets.ENABLE_MANUAL_FOLDER == 'true' }}
+        run: |
+          rclone delete "gdrive:" --drive-root-folder-id="${{ secrets.MANUAL_DRIVE_FOLDER_ID }}" --fast-list || true
+          rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.MANUAL_DRIVE_FOLDER_ID }}" --leave-root || true
+
+      # 🌟 ৫. এপিআই ট্র্যাকার স্বয়ংক্রিয়ভাবে গিটহাবে সেভ রাখা
       - name: Commit & Push API Tracker
         if: always()
         run: |
@@ -86,12 +105,14 @@ jobs:
           git add api_tracker.json workspace/api_tracker.json || true
           git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update API tracker state [skip ci]" && git push) || true
 
+      # 🌟 ৬. রেগুলার ড্রাইভ ফোল্ডার ক্লিনআপ
       - name: Push updates back to Google Drive (Permanent Folder Cleanup)
         if: always()
         run: |
           rclone sync ./workspace "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --drive-use-trash=false --fast-list
           rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --leave-root || true
 
+      # 🌟 ৭. পোর্ট্রেট ভিডিও জবলাইভে পাঠানো
       - name: Push JobLive videos to Google Drive
         if: always()
         run: |
@@ -99,6 +120,7 @@ jobs:
             rclone copy ./workspace_live "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --fast-list
           fi
 
+      # 🌟 ৮. ৩০ দিনের পুরোনো জবলাইভ ভিডিও ড্রাইভ থেকে ডিলিট
       - name: Cleanup old JobLive videos (Older than 30 days)
         if: always()
         run: |
