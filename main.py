@@ -2,12 +2,12 @@
 import os, json, shutil, traceback
 from feed_manager import (
     check_new_articles_and_prepare_folders, clean_filename, is_forbidden_article, 
-    WORKSPACE_DIR, is_article_skipped, save_skipped_article
+    WORKSPACE_DIR
 )
 from ai_service import generate_job_content
 from audio_engine import generate_voiceover_audio_pipeline
 from thumbnail import generate_dynamic_thumbnail
-from video_editor import render_video_slideshow
+from video_editor import render_grounded_video
 from youtube_uploader import get_youtube_service, upload_to_youtube
 
 TMP_DIR = "temp_assets"
@@ -15,7 +15,6 @@ LIVESTREAM_DIR = "workspace_live"
 HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
 
 def add_to_history(entry_text):
-    """হিস্টোরি ফাইলে ডুপ্লিকেট ছাড়া লিংক ও টাইটেল সংরক্ষণ করে"""
     if not entry_text or not str(entry_text).strip(): return
     clean_val = str(entry_text).strip()
     existing_records = set()
@@ -89,33 +88,18 @@ def process_ready_videos(yt):
                         article_text = cf.read().strip()
                 except Exception: pass
 
-            # 🌟 চেক ১: আর্টিকেলটি পূর্বে কোনো রানে অফলাইন হিসেবে চিহ্নিত হয়ে আছে কিনা
-            if is_article_skipped(article_link, raw_title):
-                print(f"⏩ [OFFLINE SKIP] '{folder_name}' is already in skipped_articles.json. Deleting folder.")
-                shutil.rmtree(folder_path, ignore_errors=True)
-                continue
-
             if is_forbidden_article(raw_title):
                 shutil.rmtree(folder_path, ignore_errors=True)
                 continue
 
             print(f"\n========== Process started: {folder_name} ==========")
 
-            # 🌟 চেক ২: এআই ইমেজ ও টেক্সট উভয়েই স্ক্যান করে অনলাইন নাকি অফলাইন নিশ্চিত করবে
+            # 🌟 এআই কন্টেন্ট ও পদভিত্তিক সিন জেনারেশন
             ai_res = generate_job_content(raw_title, img_files, article_text=article_text)
-            opt_title, voiceover_script, thumb_meta, video_desc, video_tags, app_type, off_reason = ai_res
+            opt_title, voiceover_script, thumb_meta, video_desc, video_tags, scenes = ai_res
 
-            # 🚫 যদি অফলাইন (ডাকযোগে/কুরিয়ার/সরাসরি) নিশ্চিত হয়: ভিডিও তৈরি হবে না
-            if app_type == "offline":
-                print(f"🚫 [OFFLINE REJECTED] '{folder_name}' requires physical/postal application ({off_reason}).")
-                # রিপোজিটরির json ফাইলে সেভ করে রাখা
-                save_skipped_article(article_link, raw_title, off_reason)
-                shutil.rmtree(folder_path, ignore_errors=True)
-                print(f"🗑️ Deleted offline circular folder '{folder_name}'. Video creation skipped.\n")
-                continue
-
-            if not opt_title:
-                print(f"🛑 [CANCELLED] All AI models failed for '{folder_name}'.")
+            if not opt_title or not voiceover_script:
+                print(f"🛑 [CANCELLED] AI generation failed for '{folder_name}'.")
                 continue
 
             video_title = opt_title
@@ -125,7 +109,6 @@ def process_ready_videos(yt):
                 audio_path = os.path.join(folder_path, existing_audio_file)
                 print(f"🎵 [PRE-EXISTING AUDIO] Using '{existing_audio_file}' directly.")
             else:
-                if not voiceover_script: continue
                 gen_audio_path = os.path.join(folder_path, "voiceover.mp3")
                 audio_success = generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path)
                 if not audio_success or not os.path.exists(gen_audio_path):
@@ -140,8 +123,9 @@ def process_ready_videos(yt):
             out_video_file = os.path.join(TMP_DIR, "final_out.mp4")
             if os.path.exists(out_video_file): os.remove(out_video_file)
 
-            print("Rendering 16:9 Landscape slideshow for YouTube upload...")
-            render_video_slideshow(audio_path, img_files, out_video_file, is_vertical=False)
+            # 🌟 অডিও বক্তব্যের সাথে মিলিয়ে নির্দিষ্ট অংশ জুম করে সিন-ভিত্তিক রেন্ডারিং
+            print("Rendering 16:9 Landscape Synchronized Video for YouTube...")
+            render_grounded_video(audio_path, img_files, scenes, out_video_file, is_vertical=False)
             
             upload_success = upload_to_youtube(
                 yt, out_video_file, video_title, 
@@ -151,7 +135,6 @@ def process_ready_videos(yt):
                 schedule_upload=True
             )
             
-            # সফল হলে হিস্টোরিতে সেভ
             if upload_success:
                 add_to_history(raw_title)
                 if article_link: add_to_history(article_link)
@@ -160,7 +143,7 @@ def process_ready_videos(yt):
                     if not os.path.exists(LIVESTREAM_DIR): os.makedirs(LIVESTREAM_DIR, exist_ok=True)
                     safe_name = clean_filename(video_title)[:45].strip()
                     live_video_file = os.path.join(LIVESTREAM_DIR, f"{safe_name}.mp4")
-                    render_video_slideshow(audio_path, img_files, live_video_file, is_vertical=True)
+                    render_grounded_video(audio_path, img_files, scenes, live_video_file, is_vertical=True)
                 except Exception: pass
 
                 shutil.rmtree(folder_path, ignore_errors=True)
@@ -196,7 +179,7 @@ def process_shorts_folder(yt):
                 except Exception: pass
 
 if __name__ == "__main__":
-    print("\n====== [ Google Drive Bot Active | Auto Filter & AI Engine ] ======\n")
+    print("\n====== [ Google Drive Bot Active | Auto Grounded Video Creator ] ======\n")
     try:
         yt_service = get_youtube_service()
         try: check_new_articles_and_prepare_folders()
