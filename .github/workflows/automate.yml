@@ -5,19 +5,17 @@ on:
     types: [rss_video_check] 
   workflow_dispatch: 
 
-# 🌟 কনকারেন্সি লক: যাতে একাধিক রান একসাথে কিউ হয়ে আটকে না থাকে
 concurrency:
   group: rss-automation-jobless
   cancel-in-progress: true
 
-# 🌟 গিটহাব রিপোজিটরিতে ট্র্যাকার ও স্কিপড ফাইল কমিট করার পারমিশন
 permissions:
   contents: write
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # অডিও জেনারেশন ও ভিডিও রেন্ডারিংয়ের জন্য নিরাপদ টাইমআউট
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -29,19 +27,16 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      # 🌟 বাংলা ফন্ট, টেক্সট রেন্ডারিং ইঞ্জিন, FFmpeg ও Rclone ইনস্টল
       - name: Install System Dependencies (Fonts, FFmpeg, Rclone)
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg rclone
 
-      # 🌟 অপটিমাইজড ডিপেনডেন্সি ইনস্টলেশন
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 🌟 Rclone কনফিগারেশন
       - name: Configure Rclone (Secure Quote Handling)
         shell: python
         env:
@@ -53,30 +48,27 @@ jobs:
           with open(config_path, 'w', encoding='utf-8') as f:
               f.write(os.environ['RCLONE_CONF_DATA'])
 
-      # 🌟 গুগল ড্রাইভ থেকে ফাইল ডাউনলোড
       - name: Download Files from Google Drive
         run: |
           mkdir -p workspace
           rclone sync "gdrive:" ./workspace --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --fast-list
 
-      # 🌟 নতুন ৪-টায়ার এআই এবং ভয়েস প্ল্যাটফর্ম সিক্রেটস পাস করা
       - name: Run Python Process (Movie & YouTube upload)
         env:
-          # YouTube Credentials
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
           GDRIVE_PARENT_FOLDER_ID: ${{ secrets.GDRIVE_PARENT_FOLDER_ID }}
           
-          # 🤖 AI Content & Vision Platforms (Priority: 1 ➔ 2 ➔ 3 ➔ 4)
-          OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
-          Ollama_API_Key: ${{ secrets.Ollama_API_Key }}
+          # 🤖 AI Platforms (Priority: 1. OpenRouter ➔ 2. Groq ➔ 3. Cerebras ➔ 4. Ollama)
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GROQ_API: ${{ secrets.GROQ_API }}
           CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
+          OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
+          Ollama_API_Key: ${{ secrets.Ollama_API_Key }}
           
-          # 🎙️ TTS Voice Platforms (Priority: 1 ➔ 2 ➔ Edge Backup)
+          # 🎙️ TTS Voice Platforms (Priority: 1. Gemini ➔ 2. ElevenLabs ➔ Edge Backup)
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_VOICE_ID: ${{ secrets.GEMINI_VOICE_ID }}
@@ -85,23 +77,21 @@ jobs:
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: python main.py
 
-      # 🌟 অফলাইন আর্টিকেলের লিস্ট ও এপিআই ট্র্যাকার স্বয়ংক্রিয়ভাবে গিটহাবে সেভ করা
-      - name: Commit & Push Skipped Articles and API Tracker
+      # 🌟 এপিআই ট্র্যাকার স্বয়ংক্রিয়ভাবে গিটহাবে সেভ রাখা
+      - name: Commit & Push API Tracker
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add skipped_articles.json api_tracker.json workspace/api_tracker.json workspace/skipped_articles.json || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update tracker and skipped circulars [skip ci]" && git push) || true
+          git add api_tracker.json workspace/api_tracker.json || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update API tracker state [skip ci]" && git push) || true
 
-      # 🌟 প্রসেস করা ও ড্রাইভ থেকে ডিলিট করা ফোল্ডার ক্লিনআপ
       - name: Push updates back to Google Drive (Permanent Folder Cleanup)
         if: always()
         run: |
           rclone sync ./workspace "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --drive-use-trash=false --fast-list
           rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --leave-root || true
 
-      # 🌟 পোর্ট্রেট ভিডিও জবলাইভে পাঠানো
       - name: Push JobLive videos to Google Drive
         if: always()
         run: |
@@ -109,7 +99,6 @@ jobs:
             rclone copy ./workspace_live "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --fast-list
           fi
 
-      # 🌟 'JobLive' ফোল্ডার থেকে ৩০ দিনের পুরোনো ভিডিও স্বয়ংক্রিয় ডিলিট
       - name: Cleanup old JobLive videos (Older than 30 days)
         if: always()
         run: |
