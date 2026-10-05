@@ -455,4 +455,102 @@ Return strictly valid JSON:
                         {"role": "user", "content": prompt}
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature":
+                    "temperature": 0.5,
+                    "max_tokens": 6000
+                }
+                try:
+                    resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=75)
+                    if resp.status_code == 200:
+                        raw_c = resp.json()['choices'][0]['message']['content']
+                        data = parse_json_safely(raw_c)
+                        if data and data.get("optimized_title"):
+                            save_tracker_index("groq", cur_idx, total_g)
+                            print(f"✨ [SUCCESS: Groq Cloud] Grounded Scenes via Key #{cur_idx+1} ({model})!")
+                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
+                    elif resp.status_code in [401, 429]:
+                        print(f"⚠️ Groq Key #{cur_idx+1} limit reached ({resp.status_code}).")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Groq error: {e}")
+                    break
+
+            save_tracker_index("groq", cur_idx + 1, total_g)
+
+    # ------------------ [৩য় প্ল্যাটফর্ম: Cerebras Cloud (Priority 3)] ------------------
+    cerebras_keys = parse_keys_from_env("CEREBRAS_API_KEYS", "CEREBRAS_API_KEY")
+    total_c = len(cerebras_keys)
+    if total_c > 0:
+        print("\n🔄 Switching to Cerebras Cloud (Priority 3)...")
+        start_idx = get_tracker_index("cerebras", total_c)
+        for offset in range(total_c):
+            cur_idx = (start_idx + offset) % total_c
+            key = cerebras_keys[cur_idx]
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+            for model in CEREBRAS_MODELS:
+                print(f"🤖 [Cerebras Key #{cur_idx+1}/{total_c}] Model: '{model}'...")
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "Output strictly valid JSON with structured scenes and visual crop box percentages."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.5,
+                    "max_tokens": 6000
+                }
+                try:
+                    resp = requests.post(CEREBRAS_API_URL, headers=headers, json=payload, timeout=75)
+                    if resp.status_code == 200:
+                        raw_c = resp.json()['choices'][0]['message']['content']
+                        data = parse_json_safely(raw_c)
+                        if data and data.get("optimized_title"):
+                            save_tracker_index("cerebras", cur_idx, total_c)
+                            print(f"✨ [SUCCESS: Cerebras Cloud] Grounded Scenes via Key #{cur_idx+1} ({model})!")
+                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
+                    elif resp.status_code in [401, 429]:
+                        print(f"⚠️ Cerebras Key #{cur_idx+1} limit reached ({resp.status_code}).")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Cerebras error: {e}")
+                    break
+
+            save_tracker_index("cerebras", cur_idx + 1, total_c)
+
+    # ------------------ [৪র্থ প্ল্যাটফর্ম: Ollama Cloud (Priority 4 / Last)] ------------------
+    ollama_keys = parse_keys_from_env("OLLAMA_API_KEYS", "Ollama_API_Key", "OLLAMA_API_KEY")
+    total_o = len(ollama_keys)
+    if total_o > 0:
+        print("\n🔄 Switching to Ollama Cloud (Priority 4 / Last)...")
+        start_idx = get_tracker_index("ollama", total_o)
+        for offset in range(total_o):
+            cur_idx = (start_idx + offset) % total_o
+            key = ollama_keys[cur_idx]
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+
+            for model in OLLAMA_MODELS:
+                print(f"🤖 [Ollama Key #{cur_idx+1}/{total_o}] Model: '{model}' for '{clean_title[:35]}'...")
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt, "images": base64_images}],
+                    "stream": False,
+                    "options": {"temperature": 0.5, "num_predict": 6000}
+                }
+                try:
+                    resp = requests.post(f"{OLLAMA_API_URL}/api/chat", headers=headers, json=payload, timeout=90)
+                    if resp.status_code == 200:
+                        raw_c = resp.json().get("message", {}).get("content", "").strip()
+                        data = parse_json_safely(raw_c)
+                        if data and data.get("optimized_title"):
+                            save_tracker_index("ollama", cur_idx, total_o)
+                            print(f"✨ [SUCCESS: Ollama Cloud] Grounded Scenes via Key #{cur_idx+1} ({model})!")
+                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
+                    elif resp.status_code in [401, 403, 429]:
+                        print(f"⚠️ Ollama Key #{cur_idx+1} limit reached ({resp.status_code}).")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Ollama network error on Key #{cur_idx+1}: {e}")
+                    break
+
+            save_tracker_index("ollama", cur_idx + 1, total_o)
+
+    return None, None, None, None, None, []
