@@ -1,69 +1,66 @@
 # -*- coding: utf-8 -*-
-import os, json, re, base64, requests
+import os, json, re, requests
 from datetime import datetime
-from PIL import Image
 
-TRACKER_FILE = os.path.join("workspace", "api_tracker.json")
-ROOT_TRACKER_FILE = "api_tracker.json"
-
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-CEREBRAS_API_URL = "https://api.cerebras.ai/v1/chat/completions"
-OLLAMA_API_URL = os.environ.get("OLLAMA_API_URL", "https://api.ollama.com").rstrip("/")
+WORKSPACE_DIR = "workspace"
+TRACKER_FILE = "api_key_tracker.json"
+WORKSPACE_TRACKER = os.path.join(WORKSPACE_DIR, "api_key_tracker.json")
 
 OPENROUTER_MODELS = [
-    "google/gemini-2.5-flash",
+    "google/gemini-2.0-flash-001",
     "meta-llama/llama-3.3-70b-instruct",
-    "qwen/qwen-2.5-72b-instruct"
+    "deepseek/deepseek-chat",
+    "mistralai/mistral-large-2411"
 ]
-
 GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 CEREBRAS_MODELS = ["llama-3.3-70b", "llama3.1-8b"]
-
 OLLAMA_MODELS = [
-    "gemma4:31b",
-    "gemma4",
-    "gpt-oss:120b",
-    "gpt-oss:20b",
-    "nemotron-3-nano:30b",
-    "nemotron-3-super"
+    "gemma4:31b", "gemma4", "gpt-oss:120b", "gpt-oss:20b",
+    "nemotron-3-nano:30b", "kimi-k3", "minimax-m3", "kimi-k2.6"
 ]
 
-def parse_keys_from_env(*env_names):
-    keys = []
-    for name in env_names:
-        raw_val = os.environ.get(name, "").strip()
-        if raw_val:
-            for line in re.split(r'[\r\n]+', raw_val):
-                clean_k = line.strip()
-                if clean_k and not clean_k.startswith('#') and clean_k not in keys:
-                    keys.append(clean_k)
-    return keys
+def clean_script_for_speech(raw_text):
+    if not raw_text: return ""
+    text = re.sub(r'[\*\_\|\#\~]', '', str(raw_text))
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'https?://\S+|wa\.me/\S+', '', text)
+    text = re.sub(r'[\<\>\{\}\(\)\@\$\^\&\+\=\_\\\/]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def parse_multiline_keys(raw_text):
+    if not raw_text: return []
+    lines = re.split(r'[\r\n,;]+', str(raw_text))
+    return [k.strip() for k in lines if k.strip() and not k.strip().startswith('#')]
 
 def load_tracker():
-    for path in [TRACKER_FILE, ROOT_TRACKER_FILE]:
-        if os.path.exists(path):
+    for p in [WORKSPACE_TRACKER, TRACKER_FILE]:
+        if os.path.exists(p):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                with open(p, "r", encoding="utf-8") as f: return json.load(f)
             except Exception: pass
     return {}
 
-def save_tracker_index(service_name, current_idx, total_keys):
+def save_tracker_index(service_name, index, total_keys):
     if total_keys == 0: return
     data = load_tracker()
-    data[f"{service_name}_idx"] = current_idx % total_keys
-    for path in [TRACKER_FILE, ROOT_TRACKER_FILE]:
+    if service_name not in data: data[service_name] = {}
+    data[service_name]["current_index"] = index % total_keys
+    data[service_name]["last_updated"] = datetime.now().isoformat()
+    for p in [WORKSPACE_TRACKER, TRACKER_FILE]:
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception: pass
 
-def get_tracker_index(service_name, total_keys):
-    if total_keys == 0: return 0
+def get_keys_in_cyclic_order(service_name, raw_keys_str):
+    keys = parse_multiline_keys(raw_keys_str)
+    if not keys: return []
+    total = len(keys)
     data = load_tracker()
-    return int(data.get(f"{service_name}_idx", 0)) % total_keys
+    saved_idx = data.get(service_name, {}).get("current_index", 0) % total
+    return [((saved_idx + i) % total, keys[(saved_idx + i) % total]) for i in range(total)]
 
 DEFAULT_BASE_TAGS = [
     'চাকরির সার্কুলার', 'চাকরির খবর', 'সরকারি চাকরি',
@@ -142,27 +139,13 @@ def convert_all_numbers_in_script(text):
     text = re.sub(r'ঘরে\s*বসে\s*', '', text)
     return text
 
-def get_current_years():
-    cur_year = datetime.now().year
-    en_to_bn = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
-    cur_year_bn = str(cur_year).translate(en_to_bn)
-    return str(cur_year), cur_year_bn
-
-def normalize_outdated_years(text):
-    if not text: return text
-    cur_en, cur_bn = get_current_years()
-    text = re.sub(r'\b202[0-5]\b', cur_en, str(text))
-    text = re.sub(r'২০২[০-৫]', cur_bn, text)
-    text = re.sub(r'ঘরে\s*বসে\s*', '', text)
-    return text
-
 def sanitize_youtube_tags(raw_tags, max_total_chars=400):
     clean_tags = []
     current_length = 0
     for tag in raw_tags:
         if not tag or not isinstance(tag, str): continue
         cleaned = re.sub(r'[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\u2300-\u23ff]|[\u2b50-\u2b55]|[\<\>\"\,\n\r]', '', tag)
-        cleaned = normalize_outdated_years(re.sub(r'\s+', ' ', cleaned).strip())
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         if not cleaned or len(cleaned) < 2: continue
         cleaned = cleaned[:50].strip()
         if cleaned not in clean_tags:
@@ -179,378 +162,326 @@ def clean_title_for_display(title):
 
 def strip_unwanted_chars(text):
     cleaned = re.sub(r'[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\u2300-\u23ff]|[\u2b50-\u2b55]|✪|★|☆', '', str(text))
-    return normalize_outdated_years(cleaned.strip())
-
-def extract_vacancy_and_qual(title):
-    vac_match = re.search(r'(\d+|[০-৯]+)\s*(টি\s*)?পদে', title)
-    vac_str = vac_match.group(0) if vac_match else ""
-    qual = ""
-    if any(k in title.upper() for k in ["SSC", "এসএসসি"]): qual = "SSC পাশ যোগ্যতা"
-    elif any(k in title.upper() for k in ["HSC", "এইচএসসি"]): qual = "HSC পাশ যোগ্যতা"
-    elif any(k in title for k in ["৮ম", "অষ্টম"]): qual = "৮ম শ্রেণি পাশ"
-    elif any(k in title for k in ["স্নাতক", "ডিগ্রী", "অনার্স", "Degree", "Honours"]): qual = "স্নাতক পাশ যোগ্যতা"
-    return vac_str, qual
-
-def encode_image_base64(image_path, max_dim=1024):
-    try:
-        with Image.open(image_path) as img:
-            img = img.convert("RGB")
-            if max(img.size) > max_dim: img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-            from io import BytesIO
-            buf = BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            return base64.b64encode(buf.getvalue()).decode('utf-8')
-    except Exception: return None
+    return cleaned.strip()
 
 def parse_json_safely(raw_text):
     try:
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(0))
+        if json_match: return json.loads(json_match.group(0))
         return json.loads(raw_text)
-    except Exception:
-        return None
+    except Exception: return None
 
-def build_final_response(data, vac_str, qual_str, org_name, num_images=1, custom_script=""):
-    opt_title = normalize_outdated_years(data.get("optimized_title", "").strip()[:100])
-    desc = normalize_outdated_years(data.get("video_description", "").strip())
-    raw_tags = data.get("specific_tags", []) + DEFAULT_BASE_TAGS
-    tags = sanitize_youtube_tags(raw_tags)
+# =========================================================================
+# 🌟 এআই এক্সিকিউশন গেটওয়ে (Priority: OpenRouter -> Groq -> Cerebras -> Ollama)
+# =========================================================================
 
-    gen_bot = data.get("bot_text", "").strip()
-    if not gen_bot or "আবেদনের নিয়ম ও বিস্তারিত" in gen_bot:
-        gen_bot = f"({vac_str}) বিশাল সার্কুলার" if vac_str else "আবেদনের শেষ তারিখ ও নিয়ম"
+def execute_ai_query(prompt, json_mode=True):
+    # ১. OpenRouter (১ম প্রায়োরিটি)
+    raw_openrouter = os.environ.get("OPENROUTER_API_KEYS", os.environ.get("OPENROUTER_API_KEY", "")).strip()
+    or_order = get_keys_in_cyclic_order("openrouter", raw_openrouter)
+    total_or = len(parse_multiline_keys(raw_openrouter))
+
+    if or_order:
+        for actual_idx, or_key in or_order:
+            headers = {"Authorization": f"Bearer {or_key}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com", "X-Title": "YouTube Automation"}
+            for model_name in OPENROUTER_MODELS:
+                payload = {"model": model_name, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
+                try:
+                    resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=50)
+                    if resp.status_code == 200:
+                        content_txt = resp.json()['choices'][0]['message']['content']
+                        save_tracker_index("openrouter", actual_idx, total_or)
+                        return parse_json_safely(content_txt) if json_mode else content_txt
+                    elif resp.status_code in [401, 402, 429]: break
+                except Exception: pass
+            save_tracker_index("openrouter", actual_idx + 1, total_or)
+
+    # ২. Groq (২য় প্রায়োরিটি)
+    raw_groq = os.environ.get("GROQ_API_KEYS", os.environ.get("GROQ_API", "")).strip()
+    groq_order = get_keys_in_cyclic_order("groq", raw_groq)
+    total_groq = len(parse_multiline_keys(raw_groq))
+
+    if groq_order:
+        for actual_idx, g_key in groq_order:
+            headers = {"Authorization": f"Bearer {g_key}", "Content-Type": "application/json"}
+            for g_model in GROQ_MODELS:
+                payload = {
+                    "model": g_model,
+                    "messages": [{"role": "system", "content": "You are a professional Bengali job circular specialist. Output valid JSON only." if json_mode else "Be accurate."}, {"role": "user", "content": prompt}],
+                    "temperature": 0.3, "max_tokens": 4000
+                }
+                if json_mode: payload["response_format"] = {"type": "json_object"}
+                try:
+                    resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=40)
+                    if resp.status_code == 200:
+                        content_txt = resp.json()['choices'][0]['message']['content']
+                        save_tracker_index("groq", actual_idx, total_groq)
+                        return parse_json_safely(content_txt) if json_mode else content_txt
+                    elif resp.status_code in [401, 402, 429]: break
+                except Exception: pass
+            save_tracker_index("groq", actual_idx + 1, total_groq)
+
+    # ৩. Cerebras (৩য় প্রায়োরিটি)
+    raw_cerebras = os.environ.get("CEREBRAS_API_KEYS", os.environ.get("CEREBRAS_API_KEY", "")).strip()
+    cerebras_order = get_keys_in_cyclic_order("cerebras", raw_cerebras)
+    total_cerebras = len(parse_multiline_keys(raw_cerebras))
+
+    if cerebras_order:
+        for actual_idx, c_key in cerebras_order:
+            headers = {"Authorization": f"Bearer {c_key}", "Content-Type": "application/json"}
+            for c_model in CEREBRAS_MODELS:
+                payload = {"model": c_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 4000}
+                try:
+                    resp = requests.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload, timeout=40)
+                    if resp.status_code == 200:
+                        content_txt = resp.json()['choices'][0]['message']['content']
+                        save_tracker_index("cerebras", actual_idx, total_cerebras)
+                        return parse_json_safely(content_txt) if json_mode else content_txt
+                    elif resp.status_code in [401, 402, 429]: break
+                except Exception: pass
+            save_tracker_index("cerebras", actual_idx + 1, total_cerebras)
+
+    # ৪. Ollama (৪র্থ প্রায়োরিটি - Gemma First)
+    raw_ollama = os.environ.get("OLLAMA_API_KEYS", os.environ.get("Ollama_API_Key", os.environ.get("OLLAMA_API_KEY", ""))).strip()
+    ollama_order = get_keys_in_cyclic_order("ollama", raw_ollama)
+    total_ollama = len(parse_multiline_keys(raw_ollama))
+
+    if ollama_order:
+        for actual_idx, o_key in ollama_order:
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {o_key}"}
+            for model_name in OLLAMA_MODELS:
+                payload = {"model": model_name, "messages": [{"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.3}}
+                try:
+                    resp = requests.post("https://api.ollama.com/api/chat", headers=headers, json=payload, timeout=50)
+                    if resp.status_code == 200:
+                        content_txt = resp.json().get("message", {}).get("content", "").strip()
+                        save_tracker_index("ollama", actual_idx, total_ollama)
+                        return parse_json_safely(content_txt) if json_mode else content_txt
+                    elif resp.status_code in [401, 402, 429]: break
+                except Exception: pass
+            save_tracker_index("ollama", actual_idx + 1, total_ollama)
+
+    return None
+
+# =========================================================================
+# 🌟 ৪টি পৃথক মডুলার কল (আর্টিকেল পড়ে 'ফর্ম পূরণ' / 'আবেদনপত্র তৈরি' শনাক্তকরণ)
+# =========================================================================
+
+def extract_verified_job_data(title, article_text):
+    """
+    【কল ১】আর্টিকেল পড়ে আবেদন পদ্ধতি ও পদের তথ্য নিশ্চিত করা
+    """
+    print("\n🔍 [STEP 1] Extracting accurate job facts & confirmed application method...")
+    prompt = f"""You are a strict data extraction specialist.
+Analyze this human-written Bengali job circular article text carefully:
+---
+TITLE: {title}
+ARTICLE TEXT:
+{article_text[:4000]}
+---
+
+CRITICAL INSTRUCTIONS:
+1. Examine if application is through Courier (কুরিয়ার) or Postal Department / Post Office (ডাক বিভাগ / ডাকযোগে / রেজিস্টার্ড ডাক) or Direct Office Submission:
+   - If applicants must fill a prescribed form (নির্ধারিত চাকরির আবেদন ফরম / নির্দিষ্ট ফরম পূরণ), set "application_method": "prescribed_form" and "hook_phrase": "ফর্ম পূরণ".
+   - If applicants must write/draft a formal application letter on plain paper with CV (সাদা কাগজে স্বহস্তে লিখিত আবেদনপত্র / আবেদনপত্র তৈরি), set "application_method": "formal_letter" and "hook_phrase": "আবেদনপত্র তৈরি".
+   - Otherwise, if application is via online link/teletalk/web portal, set "application_method": "online" and "hook_phrase": "অনলাইনে আবেদন".
+
+2. Extract EXACT facts. DO NOT GUESS:
+   - "organization": Official Bengali organization name.
+   - "total_vacancies": Exact total vacancy count as stated (e.g. '০৫টি', '১২টি', '১টি').
+   - "posts": Array of each job position:
+     * "post_name": Exact post name.
+     * "vacancy_count": Exact number of vacancies (e.g. '১টি', '০৫টি'). Never guess.
+     * "salary_scale": Exact pay scale and grade.
+     * "educational_qualification": Exact minimum degree and qualification.
+     * "work_nature": Brief description of what work this post does.
+
+Return strictly valid JSON:
+{{
+  "organization": "...",
+  "total_vacancies": "...",
+  "application_method": "prescribed_form" | "formal_letter" | "online",
+  "hook_phrase": "ফর্ম পূরণ" | "আবেদনপত্র তৈরি" | "অনলাইনে আবেদন",
+  "posts": [
+    {{"post_name": "...", "vacancy_count": "...", "salary_scale": "...", "educational_qualification": "...", "work_nature": "..."}}
+  ]
+}}"""
+    return execute_ai_query(prompt, json_mode=True)
+
+def generate_script_from_verified_data(verified_data, title, article_text):
+    """
+    【কল ২】১০+ মিনিটের গভীর স্ক্রিপ্ট ('শূন্যপদ' পুনরাবৃত্তি মুক্ত ও নির্দিষ্ট CTA)
+    """
+    print("🎙️ [STEP 2] Generating in-depth 10+ minute script without repetitive 'শূন্যপদ'...")
+    data_str = json.dumps(verified_data, ensure_ascii=False, indent=2)
+    app_method = verified_data.get("application_method", "online")
+
+    if app_method == "prescribed_form":
+        cta_instruction = 'Tell viewers: "এই নিয়োগে আবেদনের জন্য নির্ধারিত চাকরির আবেদন ফরমটি সঠিক নিয়মে পূরণ করতে এবং প্রয়োজনীয় কাগজপত্র প্রস্তুত করতে স্ক্রিনে দেওয়া অথবা ডেসক্রিপশনে থাকা হোয়াটসঅ্যাপ নম্বরে আজই যোগাযোগ করুন। আমাদের অভিজ্ঞ টিম আপনার চাকরির ফর্ম পূরণ সফলভাবে সম্পন্ন করে দেবে।"'
+    elif app_method == "formal_letter":
+        cta_instruction = 'Tell viewers: "এই নিয়োগের জন্য সঠিক ফরম্যাটে আনুষ্ঠানিক আবেদনপত্র ও জীবনবৃত্তান্ত (CV) তৈরি করতে স্ক্রিনে দেওয়া অথবা ডেসক্রিপশনে থাকা হোয়াটসঅ্যাপ নম্বরে আজই যোগাযোগ করুন। আমাদের অভিজ্ঞ টিম আপনার আবেদনপত্র তৈরি ও গুছিয়ে দেওয়ার সম্পূর্ণ দায়িত্ব নেবে।"'
+    else:
+        cta_instruction = 'Tell viewers: "এই নিয়োগে অনলাইনে শতভাগ নির্ভুলভাবে আবেদন সম্পন্ন করতে স্ক্রিনে দেওয়া অথবা ডেসক্রিপশনে থাকা হোয়াটসঅ্যাপ নম্বরে আজই যোগাযোগ করুন। আমাদের অভিজ্ঞ টিম অত্যন্ত সতর্কতার সাথে আপনার আবেদন ফরম পূরণ করে দেবে।"'
+
+    prompt = f"""You are a senior job documentary scriptwriter.
+Title: "{title}"
+VERIFIED JOB DATA:
+{data_str}
+REFERENCE ARTICLE CONTEXT:
+{article_text[:2500]}
+
+STRICT SCRIPT RULES (10+ MINUTE VIDEO DURATION):
+1. LENGTH: 1350 to 1500 Bengali words total across 8 to 12 detailed segments.
+2. 🚫 STRICT PROHIBITION ON 'শূন্যপদ':
+   - Do NOT repetitively say 'অমুক পদে এতটি শূন্যপদ রয়েছে' or overuse the robotic word 'শূন্যপদ'.
+   - Instead, use conversational, natural Bengali expressions like:
+     * 'অমুক পদে [সংখ্যা] জন লোক নেওয়া হবে'
+     * 'এই পদে [সংখ্যা] জন নিয়োগ পাবেন'
+     * 'এই পদের জন্য মোট [সংখ্যা] জন কর্মী নেওয়া হবে'
+3. IN-DEPTH DETAILS:
+   - For every post, thoroughly explain daily responsibilities (কোন পদের কি কাজ ও দায়িত্ব), qualifications, GPA, salary scale, grade, and government benefits.
+4. FORBIDDEN: Do NOT explain application website steps, SMS codes, or photo pixel sizes.
+5. OUTRO & CONFIRMED CTA:
+   {cta_instruction}
+6. VISUAL TARGETS (For Video Synchronizer):
+   Return as "script_segments" list:
+   - "focus_region": One of ["header", "post_1", "post_2", "post_3", "post_4", "terms", "footer"]
+   - "image_index": 1, 2, or 3
+   - "text": Spoken Bengali text (120 to 160 words per segment). All numbers in Bengali words!
+
+Return strictly valid JSON:
+{{
+  "script_segments": [
+    {{"segment_id": 1, "focus_region": "header", "image_index": 1, "text": "..."}},
+    {{"segment_id": 2, "focus_region": "post_1", "image_index": 1, "text": "..."}}
+  ]
+}}"""
+    return execute_ai_query(prompt, json_mode=True)
+
+def generate_seo_metadata(verified_data, title):
+    """
+    【কল ৩】এসইও ফ্রেন্ডলি টাইটেল, ডেসক্রিপশন ও ট্যাগস ('ফর্ম পূরণ' / 'আবেদনপত্র তৈরি' সহ)
+    """
+    print("📈 [STEP 3] Generating SEO Title, Description & Tags with Method Hook...")
+    posts_summary = ", ".join([p.get("post_name", "") for p in verified_data.get("posts", [])[:4]])
+    total_vac = verified_data.get("total_vacancies", "")
+    org = verified_data.get("organization", title)
+    hook_phrase = verified_data.get("hook_phrase", "অনলাইনে আবেদন")
+
+    prompt = f"""Generate YouTube SEO metadata for this job circular:
+Organization: "{org}"
+Title: "{title}"
+Key Posts: "{posts_summary}"
+Total Vacancies: "{total_vac}"
+Application Method Hook: "{hook_phrase}"
+
+MANDATORY RULE:
+- The YouTube Title, Description, and Tags MUST prominently mention "{hook_phrase}"!
+  * If "{hook_phrase}" is "ফর্ম পূরণ": Title must include 'ফর্ম পূরণ' (e.g. "... | চাকরির ফর্ম পূরণ করার নিয়ম 🔥").
+  * If "{hook_phrase}" is "আবেদনপত্র তৈরি": Title must include 'আবেদনপত্র তৈরি' (e.g. "... | চাকরির আবেদনপত্র তৈরি করার নিয়ম 📝").
+  * If "{hook_phrase}" is "অনলাইনে আবেদন": Title must include 'অনলাইনে আবেদন'.
+
+Return strictly valid JSON:
+{{
+  "optimized_title": "High CTR click-worthy Bengali YouTube Title under 95 chars with '{hook_phrase}' and symbols (🔥, 🚨, |)",
+  "video_description": "Comprehensive description with post highlights, vacancy details, '{hook_phrase}' instructions, and WhatsApp contact details.",
+  "specific_tags": ["6 to 10 specific Bengali & English SEO tags including '{hook_phrase}', without commas"]
+}}"""
+    return execute_ai_query(prompt, json_mode=True)
+
+def generate_thumbnail_metadata(verified_data, title):
+    """
+    【কল ৪】থাম্বনেইল টেক্সট ('ফর্ম পূরণ' / 'আবেদনপত্র তৈরি' সহ)
+    """
+    print("🎨 [STEP 4] Generating Dynamic Thumbnail Texts with Method Hook...")
+    first_post = verified_data.get("posts", [{}])[0]
+    post_name = first_post.get("post_name", "জরুরি নিয়োগ")
+    total_vac = verified_data.get("total_vacancies", "")
+    org = verified_data.get("organization", "সরকারি চাকরি")
+    qual = first_post.get("educational_qualification", "যোগ্যতা ও নিয়ম")
+    hook_phrase = verified_data.get("hook_phrase", "অনলাইনে আবেদন")
+
+    prompt = f"""Generate 4 dynamic, distinct thumbnail texts for this job:
+Organization: "{org}"
+Main Post: "{post_name}"
+Vacancies: "{total_vac}"
+Qualification: "{qual}"
+Application Method Hook: "{hook_phrase}"
+
+MANDATORY RULE:
+One of the thumbnail text lines (row1_text, sub_text, or bot_text) MUST specifically highlight "{hook_phrase}"!
+- If "{hook_phrase}" is "ফর্ম পূরণ": use texts like "ফর্ম পূরণের নিয়ম" or "ফর্ম পূরণ করলেই চাকরি".
+- If "{hook_phrase}" is "আবেদনপত্র তৈরি": use texts like "আবেদনপত্র তৈরির নিয়ম" or "আবেদনপত্র তৈরি".
+
+Rules:
+- "top_text": 2-3 words. Organization name or category.
+- "row1_text": 2-3 words. Main eye-catching hook (e.g. "{post_name}").
+- "row2_text": 2-3 words. Vacancy count in RED (e.g. "{total_vac if total_vac else 'বিশাল নিয়োগ'}").
+- "sub_text": 2-3 words. Qualification or Hook (e.g. "{hook_phrase}", "SSC/HSC পাশ").
+- "bot_text": 2-4 words. Bottom bar text featuring "{hook_phrase}" (e.g. "{hook_phrase} ও নিয়ম").
+
+Return strictly valid JSON:
+{{
+  "top_text": "...",
+  "row1_text": "...",
+  "row2_text": "...",
+  "sub_text": "...",
+  "bot_text": "..."
+}}"""
+    return execute_ai_query(prompt, json_mode=True)
+
+# =========================================================================
+# 🌟 মূল মাস্টার ফাংশন (আর্টিকেল টেক্সট নির্ভর)
+# =========================================================================
+
+def generate_job_content(title, article_text, img_paths=None):
+    clean_title = clean_title_for_display(title)
+
+    # ১. কল ১: টেক্সট পড়ে সঠিক পদ ও আবেদন পদ্ধতি এক্সট্রাক্ট করা
+    verified_data = extract_verified_job_data(clean_title, article_text)
+    if not verified_data or not verified_data.get("posts"):
+        verified_data = {
+            "organization": clean_title.split("নিয়োগ")[0].strip(),
+            "total_vacancies": "",
+            "application_method": "online",
+            "hook_phrase": "অনলাইনে আবেদন",
+            "posts": [{"post_name": "বিভিন্ন পদে নিয়োগ", "vacancy_count": "", "salary_scale": "সরকারি স্কেল", "educational_qualification": "বিজ্ঞপ্তি অনুযায়ী", "work_nature": "দাপ্তরিক দায়িত্ব"}]
+        }
+
+    # ২. কল ২: ১০+ মিনিটের গভীর স্ক্রিপ্ট ('শূন্যপদ' মুক্ত)
+    script_res = generate_script_from_verified_data(verified_data, clean_title, article_text)
+    segments = script_res.get("script_segments", []) if script_res else []
+    if not segments:
+        segments = [{"segment_id": 1, "focus_region": "header", "image_index": 1, "text": "আসসালামু আলাইকুম। আজকের ভিডিওতে আপনাদের স্বাগতম।"}]
+
+    full_text_list = []
+    for seg in segments:
+        clean_t = convert_all_numbers_in_script(seg.get("text", ""))
+        seg["text"] = clean_t
+        full_text_list.append(clean_t)
+    voiceover_script = " ".join(full_text_list)
+
+    # ৩. কল ৩: এসইও মেটাডাটা
+    seo_res = generate_seo_metadata(verified_data, clean_title)
+    opt_title = seo_res.get("optimized_title", clean_title)[:100] if seo_res else clean_title[:100]
+    video_desc = seo_res.get("video_description", clean_title) if seo_res else clean_title
+    raw_tags = seo_res.get("specific_tags", []) if seo_res else []
+    video_tags = sanitize_youtube_tags(raw_tags + DEFAULT_BASE_TAGS)
+
+    # ৪. কল ৪: থাম্বনেইল টেক্সট
+    thumb_res = generate_thumbnail_metadata(verified_data, clean_title)
+    if not thumb_res: thumb_res = {}
+    
+    hook = verified_data.get("hook_phrase", "অনলাইনে আবেদন")
+    total_v = verified_data.get("total_vacancies", "বিশাল নিয়োগ")
 
     thumb_meta = {
-        "top_text": strip_unwanted_chars(data.get("top_text", org_name)),
-        "row1_text": strip_unwanted_chars(data.get("row1_text", "জরুরি নিয়োগ")),
-        "row2_text": strip_unwanted_chars(data.get("row2_text", vac_str if vac_str else "বিশাল নিয়োগ")),
-        "sub_text": strip_unwanted_chars(data.get("sub_text", qual_str if qual_str else "SSC/HSC পাশ")),
-        "bot_text": strip_unwanted_chars(gen_bot)
+        "top_text": strip_unwanted_chars(thumb_res.get("top_text", verified_data.get("organization", "সরকারি চাকরি"))),
+        "row1_text": strip_unwanted_chars(thumb_res.get("row1_text", "জরুরি নিয়োগ")),
+        "row2_text": strip_unwanted_chars(thumb_res.get("row2_text", total_v if total_v else "বিশাল নিয়োগ")),
+        "sub_text": strip_unwanted_chars(thumb_res.get("sub_text", hook)),
+        "bot_text": strip_unwanted_chars(thumb_res.get("bot_text", f"{hook} ও বিস্তারিত"))
     }
 
-    # 🌟 কাস্টম স্ক্রিপ্ট থাকলে সেটাই সরাসরি ব্যবহার হবে
-    if custom_script:
-        clean_custom = convert_all_numbers_in_script(normalize_outdated_years(custom_script))
-        # দৃশ্যপটের জন্য নিরাপদ ফলব্যাক সিন তৈরি
-        processed_scenes = []
-        scenes_raw = data.get("scenes", [])
-        if isinstance(scenes_raw, list) and len(scenes_raw) > 0:
-            for idx, sc in enumerate(scenes_raw):
-                raw_text = sc.get("text", "").strip()
-                if not raw_text: continue
-                clean_part = convert_all_numbers_in_script(normalize_outdated_years(raw_text))
-                img_idx = int(sc.get("image_index", 0)) % max(1, num_images)
-                crop_box = sc.get("crop_box", [0, 100])
-                processed_scenes.append({
-                    "title": sc.get("section_title", f"Scene {idx+1}"),
-                    "text": clean_part,
-                    "image_index": img_idx,
-                    "crop_box": [max(0, float(crop_box[0])), min(100, float(crop_box[1]))]
-                })
-
-        if not processed_scenes:
-            processed_scenes = [{
-                "title": "বিজ্ঞপ্তি বিবরণ",
-                "text": clean_custom,
-                "image_index": 0,
-                "crop_box": [0, 100]
-            }]
-        return opt_title, clean_custom, thumb_meta, desc, tags, processed_scenes
-
-    # অটোমেটিক এআই স্ক্রিপ্ট প্রসেসিং
-    scenes_raw = data.get("scenes", [])
-    processed_scenes = []
-    full_script_parts = []
-
-    if isinstance(scenes_raw, list) and len(scenes_raw) > 0:
-        for idx, sc in enumerate(scenes_raw):
-            raw_text = sc.get("text", "").strip()
-            if not raw_text: continue
-            clean_part = convert_all_numbers_in_script(normalize_outdated_years(raw_text))
-            full_script_parts.append(clean_part)
-
-            img_idx = int(sc.get("image_index", 0)) % max(1, num_images)
-            crop_box = sc.get("crop_box", [0, 100])
-            if not isinstance(crop_box, list) or len(crop_box) < 2:
-                crop_box = [0, 100]
-
-            processed_scenes.append({
-                "title": sc.get("section_title", f"Scene {idx+1}"),
-                "text": clean_part,
-                "image_index": img_idx,
-                "crop_box": [max(0, float(crop_box[0])), min(100, float(crop_box[1]))]
-            })
-
-    if not processed_scenes:
-        fallback_script = convert_all_numbers_in_script(normalize_outdated_years(data.get("voiceover_script", "")))
-        full_script_parts = [fallback_script]
-        processed_scenes = [{
-            "title": "সম্পূর্ণ বিজ্ঞপ্তি",
-            "text": fallback_script,
-            "image_index": 0,
-            "crop_box": [0, 100]
-        }]
-
-    complete_script = " ".join(full_script_parts)
-    return opt_title, complete_script, thumb_meta, desc, tags, processed_scenes
-
-# =========================================================================
-# 🌟 এআই ইঞ্জিন ক্যাস্কেড (OpenRouter -> Groq -> Cerebras -> Ollama)
-# =========================================================================
-
-def generate_job_content(title, img_paths, article_text="", custom_script=""):
-    clean_title = clean_title_for_display(title)
-    words = clean_title.split()
-    org_name = clean_title.split("নিয়োগ")[0].strip() if "নিয়োগ" in clean_title else " ".join(words[:min(3, len(words))])
-    vac_str, qual_str = extract_vacancy_and_qual(clean_title)
-    snippet_text = article_text[:2500].strip() if article_text else "None provided"
-    total_imgs = len(img_paths)
-
-    # 🌟 কাস্টম স্ক্রিপ্ট থাকলে প্রম্পট শুধু মেটাডাটা ও সিন বানাবে, নতুন স্ক্রিপ্ট লিখবে না
-    if custom_script:
-        prompt = f"""You are a professional YouTube SEO specialist and visual grounding assistant.
-Context:
-- Job Circular Title: "{clean_title}"
-- Organization: "{org_name}"
-- Scraped Details: "{snippet_text}"
-- Number of Circular Image Pages: {total_imgs}
-- User Provided Script: "{custom_script[:2500]}"
-
-IMPORTANT:
-The user has provided their own custom voiceover script. DO NOT write or replace the script.
-Your task:
-1. Provide an optimized YouTube title, description, tags, and thumbnail texts.
-2. Break down the user's provided script into scenes and map each part to the circular image coordinates (crop_box [top_percent, bottom_percent]).
-
-Return strictly valid JSON:
-{{
-  "optimized_title": "...",
-  "video_description": "...",
-  "specific_tags": ["..."],
-  "top_text": "...",
-  "row1_text": "...",
-  "row2_text": "...",
-  "sub_text": "...",
-  "bot_text": "...",
-  "scenes": [
-    {{
-      "section_title": "...",
-      "text": "Exact text chunk from user script",
-      "image_index": 0,
-      "crop_box": [10, 40]
-    }}
-  ]
-}}"""
-    else:
-        prompt = f"""You are a professional Bengali YouTube career counselor, video scriptwriter, and circular image visual grounding specialist.
-Context:
-- Job Circular Title: "{clean_title}"
-- Organization: "{org_name}"
-- Scraped Circular Content: "{snippet_text}"
-- Number of Circular Image Pages: {total_imgs} (Indices: 0 to {max(0, total_imgs-1)})
-
-CRITICAL TASK - 10-MINUTE SCRIPT WITH IMAGE SECTION GROUNDING:
-You must break down the job circular into structured SCENES. Each scene corresponds to a spoken section AND its exact visual location on the circular image.
-
-1. SCRIPT REQUIREMENTS (AT LEAST 1300 to 1600 WORDS):
-   - The total spoken script across all scenes MUST be extensive (10+ minutes). Spoken Bengali. Numbers in Bengali words.
-   - For EVERY single post/position:
-     * Detail the exact post name, section, vacancy count.
-     * Day-to-day job duties, responsibilities, work environment.
-     * Required education, GPA/division, subjects, licenses/trade.
-     * Experience, computer skills, salary scale, grade, allowances.
-   - STRICT PROHIBITION: DO NOT explain any application rules, online portal/teletalk guidelines, postal address, or paper submission procedures inside the video!
-   - FINAL SCENE CTA: Conclude by instructing viewers that to apply online or to get their application form/CV/official paper prepared accurately, they should send a WhatsApp message to the number shown on the screen or in the description.
-
-2. VISUAL GROUNDING (crop_box):
-   - For each scene, specify:
-     * "image_index": 0 for 1st page, 1 for 2nd page, etc.
-     * "crop_box": [top_percent, bottom_percent] indicating the vertical percentage (0 to 100) where that specific post/table row is located on the circular image.
-
-Return strictly valid JSON:
-{{
-  "optimized_title": "...",
-  "video_description": "...",
-  "specific_tags": ["..."],
-  "top_text": "...",
-  "row1_text": "...",
-  "row2_text": "...",
-  "sub_text": "...",
-  "bot_text": "...",
-  "scenes": [
-    {{
-      "section_title": "পদের নাম বা পরিচয়",
-      "text": "এই পদে যেসব কাজ করতে হবে এবং যেসব যোগ্যতা লাগবে...",
-      "image_index": 0,
-      "crop_box": [15, 38]
-    }}
-  ]
-}}"""
-
-    base64_images = [encode_image_base64(p) for p in img_paths[:3] if encode_image_base64(p)]
-
-    # ------------------ [১ম প্ল্যাটফর্ম: OpenRouter Cloud (Priority 1)] ------------------
-    openrouter_keys = parse_keys_from_env("OPENROUTER_API_KEYS", "OPENROUTER_API_KEY")
-    total_or = len(openrouter_keys)
-    if total_or > 0:
-        start_idx = get_tracker_index("openrouter", total_or)
-        for offset in range(total_or):
-            cur_idx = (start_idx + offset) % total_or
-            key = openrouter_keys[cur_idx]
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com",
-                "X-Title": "JobAutomation"
-            }
-
-            content_blocks = [{"type": "text", "text": prompt}]
-            for b64 in base64_images:
-                content_blocks.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-
-            for model in OPENROUTER_MODELS:
-                print(f"🤖 [OpenRouter Key #{cur_idx+1}/{total_or}] Model: '{model}' for '{clean_title[:35]}'...")
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": content_blocks}],
-                    "temperature": 0.5,
-                    "max_tokens": 6000
-                }
-                try:
-                    resp = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
-                    if resp.status_code == 200:
-                        raw_c = resp.json()['choices'][0]['message']['content']
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("openrouter", cur_idx, total_or)
-                            print(f"✨ [SUCCESS: OpenRouter] Grounded Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
-                    elif resp.status_code in [401, 402, 429]:
-                        print(f"⚠️ OpenRouter Key #{cur_idx+1} exhausted ({resp.status_code}). Trying next key...")
-                        break
-                except Exception as e:
-                    print(f"⚠️ OpenRouter error: {e}")
-                    break
-
-            save_tracker_index("openrouter", cur_idx + 1, total_or)
-
-    # ------------------ [২য় প্ল্যাটফর্ম: Groq Cloud (Priority 2)] ------------------
-    groq_keys = parse_keys_from_env("GROQ_API_KEYS", "GROQ_API", "GROQ_API_KEY")
-    total_g = len(groq_keys)
-    if total_g > 0:
-        print("\n🔄 Switching to Groq Cloud (Priority 2)...")
-        start_idx = get_tracker_index("groq", total_g)
-        for offset in range(total_g):
-            cur_idx = (start_idx + offset) % total_g
-            key = groq_keys[cur_idx]
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-            for model in GROQ_MODELS:
-                print(f"🤖 [Groq Key #{cur_idx+1}/{total_g}] Model: '{model}'...")
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are a professional career counselor. Output strictly valid JSON with grounded scene coordinates."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.5,
-                    "max_tokens": 6000
-                }
-                try:
-                    resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=75)
-                    if resp.status_code == 200:
-                        raw_c = resp.json()['choices'][0]['message']['content']
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("groq", cur_idx, total_g)
-                            print(f"✨ [SUCCESS: Groq Cloud] Grounded Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
-                    elif resp.status_code in [401, 429]:
-                        print(f"⚠️ Groq Key #{cur_idx+1} limit reached ({resp.status_code}).")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Groq error: {e}")
-                    break
-
-            save_tracker_index("groq", cur_idx + 1, total_g)
-
-    # ------------------ [৩য় প্ল্যাটফর্ম: Cerebras Cloud (Priority 3)] ------------------
-    cerebras_keys = parse_keys_from_env("CEREBRAS_API_KEYS", "CEREBRAS_API_KEY")
-    total_c = len(cerebras_keys)
-    if total_c > 0:
-        print("\n🔄 Switching to Cerebras Cloud (Priority 3)...")
-        start_idx = get_tracker_index("cerebras", total_c)
-        for offset in range(total_c):
-            cur_idx = (start_idx + offset) % total_c
-            key = cerebras_keys[cur_idx]
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-            for model in CEREBRAS_MODELS:
-                print(f"🤖 [Cerebras Key #{cur_idx+1}/{total_c}] Model: '{model}'...")
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "Output strictly valid JSON with structured scenes and visual crop box percentages."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.5,
-                    "max_tokens": 6000
-                }
-                try:
-                    resp = requests.post(CEREBRAS_API_URL, headers=headers, json=payload, timeout=75)
-                    if resp.status_code == 200:
-                        raw_c = resp.json()['choices'][0]['message']['content']
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("cerebras", cur_idx, total_c)
-                            print(f"✨ [SUCCESS: Cerebras Cloud] Grounded Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
-                    elif resp.status_code in [401, 429]:
-                        print(f"⚠️ Cerebras Key #{cur_idx+1} limit reached ({resp.status_code}).")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Cerebras error: {e}")
-                    break
-
-            save_tracker_index("cerebras", cur_idx + 1, total_c)
-
-    # ------------------ [৪র্থ প্ল্যাটফর্ম: Ollama Cloud (Priority 4 / Last)] ------------------
-    ollama_keys = parse_keys_from_env("OLLAMA_API_KEYS", "Ollama_API_Key", "OLLAMA_API_KEY")
-    total_o = len(ollama_keys)
-    if total_o > 0:
-        print("\n🔄 Switching to Ollama Cloud (Priority 4 / Last)...")
-        start_idx = get_tracker_index("ollama", total_o)
-        for offset in range(total_o):
-            cur_idx = (start_idx + offset) % total_o
-            key = ollama_keys[cur_idx]
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-
-            for model in OLLAMA_MODELS:
-                print(f"🤖 [Ollama Key #{cur_idx+1}/{total_o}] Model: '{model}' for '{clean_title[:35]}'...")
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt, "images": base64_images}],
-                    "stream": False,
-                    "options": {"temperature": 0.5, "num_predict": 6000}
-                }
-                try:
-                    resp = requests.post(f"{OLLAMA_API_URL}/api/chat", headers=headers, json=payload, timeout=90)
-                    if resp.status_code == 200:
-                        raw_c = resp.json().get("message", {}).get("content", "").strip()
-                        data = parse_json_safely(raw_c)
-                        if data and data.get("optimized_title"):
-                            save_tracker_index("ollama", cur_idx, total_o)
-                            print(f"✨ [SUCCESS: Ollama Cloud] Grounded Scenes via Key #{cur_idx+1} ({model})!")
-                            return build_final_response(data, vac_str, qual_str, org_name, total_imgs, custom_script)
-                    elif resp.status_code in [401, 403, 429]:
-                        print(f"⚠️ Ollama Key #{cur_idx+1} limit reached ({resp.status_code}).")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Ollama network error on Key #{cur_idx+1}: {e}")
-                    break
-
-            save_tracker_index("ollama", cur_idx + 1, total_o)
-
-    return None, None, None, None, None, []
+    print(f"✨ [ACCURACY GUARANTEED] 10+ Min Script Generated with Method Hook: '{hook}'!")
+    return opt_title, voiceover_script, segments, thumb_meta, video_desc, video_tags
