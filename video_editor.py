@@ -10,52 +10,68 @@ def apply_circular_invert_effect(pil_img):
     inverted_img = ImageOps.invert(bw_img)
     return inverted_img.convert("RGB")
 
-def make_scene_video_clip(img_path, crop_box, duration, target_w=1920, target_h=1080):
+def make_video_frame(img_path, duration, target_w=1920, target_h=1080):
     """
-    🌟 বিজ্ঞপ্তির নির্দিষ্ট অংশ কেটে নিয়ে স্মুথ জুম ও প্যান অ্যানিমেশন তৈরি করে
+    🌟 বিজ্ঞপ্তির ছবিটিকে উপর থেকে নিচে মসৃণভাবে স্ক্রল (Scroll / Pan-and-Scan) করানোর ফ্রেম জেনারেটর
     """
-    raw_img = Image.open(img_path)
-    processed_img = apply_circular_invert_effect(raw_img)
-    raw_img.close()
+    pil_raw = Image.open(img_path)
+    pil_img = apply_circular_invert_effect(pil_raw)
+    pil_raw.close()
 
-    orig_w, orig_h = processed_img.size
+    w, h = pil_img.size
+    ratio = w / h
+    target_ratio = target_w / target_h
 
-    # crop_box [top_percent, bottom_percent] থেকে পিক্সেল হাইট নির্ধারণ
-    top_pct, bot_pct = crop_box
-    y1 = int(orig_h * (top_pct / 100.0))
-    y2 = int(orig_h * (bot_pct / 100.0))
+    if target_w < target_h:
+        # ৯:১৬ পোর্ট্রেট ভিডিও (JobLive / Shorts)
+        if ratio < (9.0 / 16.0) - 0.01:
+            new_w, new_h = target_w, max(target_h, int((target_w / w) * h))
+            img_np = np.array(pil_img.resize((new_w, new_h), Image.LANCZOS))
+            max_offset = max(0, new_h - target_h)
+            def frame_getter(t):
+                prog = min(1.0, max(0.0, t / duration if duration > 0 else 0))
+                y_start = int(prog * max_offset)
+                return img_np[y_start : y_start + target_h, 0:target_w]
+            clip = VideoClip(frame_getter, duration=duration)
+        elif (9.0 / 16.0) - 0.01 <= ratio < (16.0 / 9.0) - 0.01:
+            scale = min(target_w / w, target_h / h)
+            resized = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+            canvas.paste(resized, ((target_w - int(w * scale)) // 2, (target_h - int(h * scale)) // 2))
+            img_np = np.array(canvas)
+            clip = VideoClip(lambda t: img_np, duration=duration)
+        else:
+            new_h, new_w = target_h, max(target_w, int((target_h / h) * w))
+            img_np = np.array(pil_img.resize((new_w, new_h), Image.LANCZOS))
+            max_offset = max(0, new_w - target_w)
+            def frame_getter(t):
+                prog = min(1.0, max(0.0, t / duration if duration > 0 else 0))
+                x_start = int(prog * max_offset)
+                return img_np[0:target_h, x_start : x_start + target_w]
+            clip = VideoClip(frame_getter, duration=duration)
+    else:
+        # ১৬:৯ ল্যান্ডস্কেপ ভিডিও (Regular YouTube Video)
+        if ratio >= target_ratio: 
+            new_h, new_w = target_h, int((target_h / h) * w)
+        else: 
+            new_w, new_h = target_w, int((target_w / w) * h)
+        if new_w < target_w: new_w, new_h = target_w, int((new_w / w) * h)
+        if new_h < target_h: new_h, new_w = target_h, int((new_h / h) * w)
+        
+        img_np = np.array(pil_img.resize((new_w, new_h), Image.LANCZOS))
+        max_y_offset = max(0, new_h - target_h)
+        max_x_offset = max(0, new_w - target_w)
+        
+        def frame_getter(t):
+            prog = min(1.0, max(0.0, t / duration if duration > 0 else 0))
+            y_start = int(prog * max_y_offset)
+            x_start = int(prog * max_x_offset)
+            return img_np[y_start : y_start + target_h, x_start : x_start + target_w]
+            
+        clip = VideoClip(frame_getter, duration=duration)
 
-    # যদি ক্রপ এরিয়া খুব ছোট হয়, কিছুটা মার্জিন যোগ করে নিরাপদ দৃশ্যপট তৈরি
-    if (y2 - y1) < int(orig_h * 0.12):
-        y1 = max(0, y1 - int(orig_h * 0.05))
-        y2 = min(orig_h, y2 + int(orig_h * 0.07))
-
-    # উল্লম্ব স্ট্রিপ ক্রপ করা
-    cropped = processed_img.crop((0, y1, orig_w, y2))
-    cw, ch = cropped.size
-
-    # ক্যানভাসে ফিট করা
-    scale = min(target_w / cw, target_h / ch)
-    fit_w = int(cw * scale)
-    fit_h = int(ch * scale)
-    resized = cropped.resize((fit_w, fit_h), Image.LANCZOS)
-
-    canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-    paste_x = (target_w - fit_w) // 2
-    paste_y = (target_h - fit_h) // 2
-    canvas.paste(resized, (paste_x, paste_y))
-
-    # 🌟 সূক্ষ্ম ক্যামেরার মোশন (Ken Burns Pan Effect) যাতে রিডিং আরামদায়ক হয়
-    base_np = np.array(canvas)
-    cropped.close()
-    resized.close()
-    canvas.close()
-    processed_img.close()
-
-    def frame_getter(t):
-        return base_np
-
-    return VideoClip(frame_getter, duration=duration)
+    pil_img.close()
+    return clip
 
 def find_front_overlay_file():
     for c in ["Front.png", "front.png", "FRONT.PNG"]:
@@ -106,43 +122,21 @@ def apply_front_overlay(main_clip, target_w, target_h):
             pass
     return main_clip
 
-def render_grounded_video(audio_path, img_files, scenes, out_file, is_vertical=False):
+def render_video_slideshow(audio_path, img_files, out_file, is_vertical=False):
     """
-    🌟 প্রতিটি পদের আলোচনার সাথে বিজ্ঞপ্তির সেই অংশকে সিঙ্ক করে ভিডিও রেন্ডার করে
+    🌟 পুরো অডিওর সময়কালকে ছবির মধ্যে ভাগ করে উপর থেকে নিচে মসৃণ স্ক্রলিং স্লাইডশো তৈরি করে
     """
     if not img_files:
-        raise ValueError("No images provided for video rendering.")
+        raise ValueError("No images provided for slideshow rendering.")
 
     target_w, target_h = (1080, 1920) if is_vertical else (1920, 1080)
     audio_clip = AudioFileClip(audio_path)
-    total_audio_duration = audio_clip.duration
+    per_img_duration = audio_clip.duration / len(img_files)
 
-    # শব্দের অনুপাত অনুযায়ী প্রতিটি সিনের সময় নির্ধারণ
-    total_words = sum(max(1, len(s.get("text", "").split())) for s in scenes)
-    if total_words == 0: total_words = 1
+    print(f"🎬 [SLIDESHOW] Rendering {len(img_files)} scrolling images (Total: {round(audio_clip.duration, 1)}s)...")
 
-    scene_clips = []
-    accumulated_time = 0.0
-
-    print(f"🎬 [VIDEO SYNC] Building {len(scenes)} visual scenes synchronized with {round(total_audio_duration, 1)}s audio...")
-
-    for idx, sc in enumerate(scenes):
-        sc_words = max(1, len(sc.get("text", "").split()))
-        # শেষ সিনের জন্য অবশিষ্ট সময় বরাদ্দ
-        if idx == len(scenes) - 1:
-            sc_duration = max(1.0, total_audio_duration - accumulated_time)
-        else:
-            sc_duration = max(1.0, (sc_words / total_words) * total_audio_duration)
-            accumulated_time += sc_duration
-
-        img_idx = sc.get("image_index", 0) % len(img_files)
-        target_img_path = img_files[img_idx]
-        crop_box = sc.get("crop_box", [0, 100])
-
-        clip = make_scene_video_clip(target_img_path, crop_box, sc_duration, target_w, target_h)
-        scene_clips.append(clip)
-
-    final_video = concatenate_videoclips(scene_clips).set_audio(audio_clip)
+    clips = [make_video_frame(v, per_img_duration, target_w, target_h) for v in img_files]
+    final_video = concatenate_videoclips(clips).set_audio(audio_clip)
     final_video = apply_front_overlay(final_video, target_w, target_h)
 
     final_video.write_videofile(
@@ -164,4 +158,7 @@ def render_grounded_video(audio_path, img_files, scenes, out_file, is_vertical=F
     )
     final_video.close()
     audio_clip.close()
-    for c in scene_clips: c.close()
+    for c in clips: c.close()
+
+# ব্যাকওয়ার্ড কম্প্যাটিবিলিটির জন্য অ্যালিয়াস
+render_synchronized_video = render_video_slideshow
