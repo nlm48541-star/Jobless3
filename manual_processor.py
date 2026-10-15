@@ -9,7 +9,7 @@ from ai_service import (
 )
 from audio_engine import generate_voiceover_audio_pipeline
 from thumbnail import generate_dynamic_thumbnail
-from video_editor import render_synchronized_video, render_video_slideshow
+from video_editor import render_video_slideshow
 from youtube_uploader import upload_to_youtube
 from feed_manager import scrape_article_content_and_images, download_image, clean_filename
 
@@ -72,7 +72,6 @@ def process_manual_drive_folder(yt):
         f_lower = f.lower()
         ext = f_lower.split('.')[-1]
 
-        # থাম্বনেইল ছবিকে চিহ্নিত করে স্লাইডশো থেকে সম্পূর্ণ বাদ রাখা
         if any(k in f_lower for k in ["thumbnail", "thumb"]) and ext in ['jpg', 'jpeg', 'png', 'webp']:
             custom_thumb_path = f_path
             continue
@@ -93,7 +92,6 @@ def process_manual_drive_folder(yt):
     scraped_title = ""
     article_text = ""
 
-    # 🌟 ড্রাইভ ফোল্ডারে শুধু link.txt থাকলে সেখান থেকেই ছবি ও আর্টিকেল সংগ্রহ করা হবে
     if link_txt_path and os.path.exists(link_txt_path):
         try:
             with open(link_txt_path, "r", encoding="utf-8") as lf:
@@ -136,7 +134,6 @@ def process_manual_drive_folder(yt):
                 user_provided_script = sf.read().strip()
         except Exception: pass
 
-    segments = []
     thumb_meta = {}
     video_desc = ""
     video_tags = DEFAULT_BASE_TAGS
@@ -154,11 +151,10 @@ def process_manual_drive_folder(yt):
             if thumb: thumb_meta = thumb
         except Exception: pass
     else:
-        # 🌟 ছবি নয়, আর্টিকেলের লেখা পড়ে স্ক্রিপ্ট তৈরি
         print("🤖 [ARTICLE TEXT MODE] Generating 10+ min accurate script from article text...")
         source_text = article_text if article_text else video_title
         ai_res = generate_job_content(video_title, source_text, img_files)
-        opt_title, voiceover_script, segments, thumb_meta, video_desc, video_tags = ai_res
+        opt_title, voiceover_script, thumb_meta, video_desc, video_tags = ai_res
         if opt_title: video_title = opt_title
 
     if not voiceover_script and not custom_audio_file:
@@ -186,10 +182,8 @@ def process_manual_drive_folder(yt):
     out_video_file = os.path.join(TMP_DIR, "manual_out.mp4")
     if os.path.exists(out_video_file): os.remove(out_video_file)
 
-    if segments:
-        render_synchronized_video(audio_path, img_files, segments, out_video_file, is_vertical=False)
-    else:
-        render_video_slideshow(audio_path, img_files, out_video_file, is_vertical=False)
+    # 🌟 স্ক্রলিং স্লাইডশো রেন্ডারিং
+    render_video_slideshow(audio_path, img_files, out_video_file, is_vertical=False)
 
     upload_success = upload_to_youtube(
         yt, out_video_file, video_title,
@@ -202,10 +196,7 @@ def process_manual_drive_folder(yt):
             os.makedirs(LIVESTREAM_DIR, exist_ok=True)
             safe_name = clean_filename(video_title)[:40].strip()
             live_video_file = os.path.join(LIVESTREAM_DIR, f"{safe_name}.mp4")
-            if segments:
-                render_synchronized_video(audio_path, img_files, segments, live_video_file, is_vertical=True)
-            else:
-                render_video_slideshow(audio_path, img_files, live_video_file, is_vertical=True)
+            render_video_slideshow(audio_path, img_files, live_video_file, is_vertical=True)
         except Exception: pass
 
         clean_manual_folder_on_drive(folder_id)
