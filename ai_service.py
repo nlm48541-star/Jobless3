@@ -172,7 +172,7 @@ def parse_json_safely(raw_text):
     except Exception: return None
 
 # =========================================================================
-# 🌟 এআই এক্সিকিউশন গেটওয়ে (Priority: OpenRouter -> Groq -> Cerebras -> Ollama)
+# 🌟 এআই এক্সিকিউশন গেটওয়ে (OpenRouter -> Groq -> Cerebras -> Ollama)
 # =========================================================================
 
 def execute_ai_query(prompt, json_mode=True):
@@ -268,9 +268,6 @@ def execute_ai_query(prompt, json_mode=True):
 # =========================================================================
 
 def extract_verified_job_data(title, article_text):
-    """
-    【কল ১】আর্টিকেল পড়ে আবেদন পদ্ধতি ও পদের তথ্য নিশ্চিত করা
-    """
     print("\n🔍 [STEP 1] Extracting accurate job facts & confirmed application method...")
     prompt = f"""You are a strict data extraction specialist.
 Analyze this human-written Bengali job circular article text carefully:
@@ -309,9 +306,6 @@ Return strictly valid JSON:
     return execute_ai_query(prompt, json_mode=True)
 
 def generate_script_from_verified_data(verified_data, title, article_text):
-    """
-    【কল ২】১০+ মিনিটের গভীর স্ক্রিপ্ট ('শূন্যপদ' পুনরাবৃত্তি মুক্ত ও নির্দিষ্ট CTA)
-    """
     print("🎙️ [STEP 2] Generating in-depth 10+ minute script without repetitive 'শূন্যপদ'...")
     data_str = json.dumps(verified_data, ensure_ascii=False, indent=2)
     app_method = verified_data.get("application_method", "online")
@@ -331,7 +325,7 @@ REFERENCE ARTICLE CONTEXT:
 {article_text[:2500]}
 
 STRICT SCRIPT RULES (10+ MINUTE VIDEO DURATION):
-1. LENGTH: 1350 to 1500 Bengali words total across 8 to 12 detailed segments.
+1. LENGTH: 1350 to 1550 Bengali words total. Write extensive, highly engaging career documentary narration.
 2. 🚫 STRICT PROHIBITION ON 'শূন্যপদ':
    - Do NOT repetitively say 'অমুক পদে এতটি শূন্যপদ রয়েছে' or overuse the robotic word 'শূন্যপদ'.
    - Instead, use conversational, natural Bengali expressions like:
@@ -343,25 +337,14 @@ STRICT SCRIPT RULES (10+ MINUTE VIDEO DURATION):
 4. FORBIDDEN: Do NOT explain application website steps, SMS codes, or photo pixel sizes.
 5. OUTRO & CONFIRMED CTA:
    {cta_instruction}
-6. VISUAL TARGETS (For Video Synchronizer):
-   Return as "script_segments" list:
-   - "focus_region": One of ["header", "post_1", "post_2", "post_3", "post_4", "terms", "footer"]
-   - "image_index": 1, 2, or 3
-   - "text": Spoken Bengali text (120 to 160 words per segment). All numbers in Bengali words!
 
 Return strictly valid JSON:
 {{
-  "script_segments": [
-    {{"segment_id": 1, "focus_region": "header", "image_index": 1, "text": "..."}},
-    {{"segment_id": 2, "focus_region": "post_1", "image_index": 1, "text": "..."}}
-  ]
+  "voiceover_script": "Complete extensive 1350+ words Bengali script. All numbers in Bengali words."
 }}"""
     return execute_ai_query(prompt, json_mode=True)
 
 def generate_seo_metadata(verified_data, title):
-    """
-    【কল ৩】এসইও ফ্রেন্ডলি টাইটেল, ডেসক্রিপশন ও ট্যাগস ('ফর্ম পূরণ' / 'আবেদনপত্র তৈরি' সহ)
-    """
     print("📈 [STEP 3] Generating SEO Title, Description & Tags with Method Hook...")
     posts_summary = ", ".join([p.get("post_name", "") for p in verified_data.get("posts", [])[:4]])
     total_vac = verified_data.get("total_vacancies", "")
@@ -377,8 +360,8 @@ Application Method Hook: "{hook_phrase}"
 
 MANDATORY RULE:
 - The YouTube Title, Description, and Tags MUST prominently mention "{hook_phrase}"!
-  * If "{hook_phrase}" is "ফর্ম পূরণ": Title must include 'ফর্ম পূরণ' (e.g. "... | চাকরির ফর্ম পূরণ করার নিয়ম 🔥").
-  * If "{hook_phrase}" is "আবেদনপত্র তৈরি": Title must include 'আবেদনপত্র তৈরি' (e.g. "... | চাকরির আবেদনপত্র তৈরি করার নিয়ম 📝").
+  * If "{hook_phrase}" is "ফর্ম পূরণ": Title must include 'ফর্ম পূরণ'.
+  * If "{hook_phrase}" is "আবেদনপত্র তৈরি": Title must include 'আবেদনপত্র তৈরি'.
   * If "{hook_phrase}" is "অনলাইনে আবেদন": Title must include 'অনলাইনে আবেদন'.
 
 Return strictly valid JSON:
@@ -390,9 +373,6 @@ Return strictly valid JSON:
     return execute_ai_query(prompt, json_mode=True)
 
 def generate_thumbnail_metadata(verified_data, title):
-    """
-    【কল ৪】থাম্বনেইল টেক্সট ('ফর্ম পূরণ' / 'আবেদনপত্র তৈরি' সহ)
-    """
     print("🎨 [STEP 4] Generating Dynamic Thumbnail Texts with Method Hook...")
     first_post = verified_data.get("posts", [{}])[0]
     post_name = first_post.get("post_name", "জরুরি নিয়োগ")
@@ -401,7 +381,7 @@ def generate_thumbnail_metadata(verified_data, title):
     qual = first_post.get("educational_qualification", "যোগ্যতা ও নিয়ম")
     hook_phrase = verified_data.get("hook_phrase", "অনলাইনে আবেদন")
 
-    prompt = f"""Generate 4 dynamic, distinct thumbnail texts for this job:
+    prompt = f"""Generate dynamic thumbnail texts for this job:
 Organization: "{org}"
 Main Post: "{post_name}"
 Vacancies: "{total_vac}"
@@ -409,16 +389,14 @@ Qualification: "{qual}"
 Application Method Hook: "{hook_phrase}"
 
 MANDATORY RULE:
-One of the thumbnail text lines (row1_text, sub_text, or bot_text) MUST specifically highlight "{hook_phrase}"!
-- If "{hook_phrase}" is "ফর্ম পূরণ": use texts like "ফর্ম পূরণের নিয়ম" or "ফর্ম পূরণ করলেই চাকরি".
-- If "{hook_phrase}" is "আবেদনপত্র তৈরি": use texts like "আবেদনপত্র তৈরির নিয়ম" or "আবেদনপত্র তৈরি".
+One of the thumbnail text lines MUST specifically highlight "{hook_phrase}"!
 
 Rules:
 - "top_text": 2-3 words. Organization name or category.
 - "row1_text": 2-3 words. Main eye-catching hook (e.g. "{post_name}").
 - "row2_text": 2-3 words. Vacancy count in RED (e.g. "{total_vac if total_vac else 'বিশাল নিয়োগ'}").
 - "sub_text": 2-3 words. Qualification or Hook (e.g. "{hook_phrase}", "SSC/HSC পাশ").
-- "bot_text": 2-4 words. Bottom bar text featuring "{hook_phrase}" (e.g. "{hook_phrase} ও নিয়ম").
+- "bot_text": 2-4 words. Bottom bar text featuring "{hook_phrase}" (e.g. "{hook_phrase} ও বিস্তারিত").
 
 Return strictly valid JSON:
 {{
@@ -437,7 +415,7 @@ Return strictly valid JSON:
 def generate_job_content(title, article_text, img_paths=None):
     clean_title = clean_title_for_display(title)
 
-    # ১. কল ১: টেক্সট পড়ে সঠিক পদ ও আবেদন পদ্ধতি এক্সট্রাক্ট করা
+    # কল ১: টেক্সট পড়ে সঠিক পদ ও আবেদন পদ্ধতি এক্সট্রাক্ট করা
     verified_data = extract_verified_job_data(clean_title, article_text)
     if not verified_data or not verified_data.get("posts"):
         verified_data = {
@@ -448,27 +426,21 @@ def generate_job_content(title, article_text, img_paths=None):
             "posts": [{"post_name": "বিভিন্ন পদে নিয়োগ", "vacancy_count": "", "salary_scale": "সরকারি স্কেল", "educational_qualification": "বিজ্ঞপ্তি অনুযায়ী", "work_nature": "দাপ্তরিক দায়িত্ব"}]
         }
 
-    # ২. কল ২: ১০+ মিনিটের গভীর স্ক্রিপ্ট ('শূন্যপদ' মুক্ত)
+    # কল ২: ১০+ মিনিটের গভীর স্ক্রিপ্ট ('শূন্যপদ' মুক্ত)
     script_res = generate_script_from_verified_data(verified_data, clean_title, article_text)
-    segments = script_res.get("script_segments", []) if script_res else []
-    if not segments:
-        segments = [{"segment_id": 1, "focus_region": "header", "image_index": 1, "text": "আসসালামু আলাইকুম। আজকের ভিডিওতে আপনাদের স্বাগতম।"}]
+    raw_script = script_res.get("voiceover_script", "") if script_res else ""
+    if not raw_script:
+        raw_script = "আসসালামু আলাইকুম। আজকের নিয়োগ বিজ্ঞপ্তির বিস্তারিত আলোচনা পর্বে আপনাদের স্বাগতম।"
+    voiceover_script = convert_all_numbers_in_script(raw_script)
 
-    full_text_list = []
-    for seg in segments:
-        clean_t = convert_all_numbers_in_script(seg.get("text", ""))
-        seg["text"] = clean_t
-        full_text_list.append(clean_t)
-    voiceover_script = " ".join(full_text_list)
-
-    # ৩. কল ৩: এসইও মেটাডাটা
+    # কল ৩: এসইও মেটাডাটা
     seo_res = generate_seo_metadata(verified_data, clean_title)
     opt_title = seo_res.get("optimized_title", clean_title)[:100] if seo_res else clean_title[:100]
     video_desc = seo_res.get("video_description", clean_title) if seo_res else clean_title
     raw_tags = seo_res.get("specific_tags", []) if seo_res else []
     video_tags = sanitize_youtube_tags(raw_tags + DEFAULT_BASE_TAGS)
 
-    # ৪. কল ৪: থাম্বনেইল টেক্সট
+    # কল ৪: থাম্বনেইল টেক্সট
     thumb_res = generate_thumbnail_metadata(verified_data, clean_title)
     if not thumb_res: thumb_res = {}
     
@@ -484,4 +456,4 @@ def generate_job_content(title, article_text, img_paths=None):
     }
 
     print(f"✨ [ACCURACY GUARANTEED] 10+ Min Script Generated with Method Hook: '{hook}'!")
-    return opt_title, voiceover_script, segments, thumb_meta, video_desc, video_tags
+    return opt_title, voiceover_script, thumb_meta, video_desc, video_tags
