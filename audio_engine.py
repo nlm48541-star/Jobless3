@@ -1,240 +1,201 @@
 # -*- coding: utf-8 -*-
-import os, re, time, base64, requests, shutil
-from ai_service import parse_keys_from_env, get_tracker_index, save_tracker_index
+import io
+import os
+import re
+import shutil
+import subprocess
+import time
+from pathlib import Path
 
-def mask_key(k):
-    if not k or len(k) <= 8: return "****"
-    return k[:4] + "..." + k[-4:]
+import numpy as np
+import soundfile as sf
+
+_NINADA_ENGINE = None
+
 
 def clean_script_for_speech(raw_text):
-    if not raw_text: return ""
-    text = re.sub(r'[\*\_\|\#\~]', '', raw_text)
+    if not raw_text:
+        return ""
+    text = re.sub(r'<think>.*?</think>', '', str(raw_text), flags=re.DOTALL)
+    text = re.sub(r'[\*\_\|\#\~`]', '', text)
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'https?://\S+|wa\.me/\S+', '', text)
     text = re.sub(r'[\<\>\{\}\(\)\@\$\^\&\+\=\_\\\/]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def split_text_into_chunks(text, max_chars=1200):
-    """১০ মিনিটের দীর্ঘ টেক্সটকে বাক্য অনুসারে নিরাপদ খণ্ডে ভাগ করে"""
-    raw_parts = re.split(r'([।\?\!\n]+)', text)
+
+def _split_text_for_ninada(text, max_chars=450):
+    """স্বাভাবিক দাঁড়ি-কমা বহাল রেখে দীর্ঘ স্ক্রিপ্টকে নিরাপদ বাক্য-খণ্ডে বিভক্ত করে"""
+    text = re.sub(r'\s+', ' ', str(text)).strip()
+    if not text:
+        return []
+
+    raw_sents = [s.strip() for s in re.split(r'(?<=[।\.\?\!\n])\s*', text) if s.strip()]
+    pieces = []
+    for s in raw_sents:
+        if len(s) <= max_chars:
+            pieces.append(s)
+        else:
+            sub_parts = [p.strip() for p in re.split(r'(?<=[,;—\-])\s*', s) if p.strip()]
+            for sp in sub_parts:
+                if len(sp) <= max_chars:
+                    pieces.append(sp)
+                else:
+                    words = sp.split()
+                    cur = ""
+                    for w in words:
+                        if len(cur) + len(w) + 1 <= max_chars:
+                            cur = f"{cur} {w}".strip()
+                        else:
+                            if cur:
+                                pieces.append(cur)
+                            cur = w
+                    if cur:
+                        pieces.append(cur)
+
     chunks = []
-    current = ""
-    for p in raw_parts:
-        current += p
-        if any(sym in p for sym in ['।', '?', '!', '\n']) or len(current) >= max_chars:
-            if current.strip(): chunks.append(current.strip())
-            current = ""
-    if current.strip(): chunks.append(current.strip())
+    buf = ""
+    for p in pieces:
+        if not buf:
+            buf = p
+        elif len(buf) + len(p) + 1 <= max_chars:
+            buf = f"{buf} {p}"
+        else:
+            chunks.append(buf)
+            buf = p
+    if buf:
+        chunks.append(buf)
     return chunks
 
-# =========================================================================
-# 🌟 ১. Gemini 3.8 Flash TTS ইঞ্জিন (Priority 1)
-# =========================================================================
 
-def synthesize_with_gemini(speech_text, output_audio_path):
-    print("\n--- [VOICE ENGINE 1: Gemini 3.8 Flash TTS] ---")
-    gemini_keys = parse_keys_from_env("GEMINI_API_KEYS", "GEMINI_API_KEY")
-    total_keys = len(gemini_keys)
-    if total_keys == 0:
-        print("  ⚠️ 'GEMINI_API_KEYS' not found in environment secrets.")
-        return False
+def _get_ninada_engine():
+    global _NINADA_ENGINE
+    if _NINADA_ENGINE is None:
+        from ninada import Ninada
+        _NINADA_ENGINE = Ninada(lang="bn")
+    return _NINADA_ENGINE
 
+
+def _apply_ninada_postprocess(raw_wav: Path, output_path: Path, tempo: str = "0.92"):
+    """Ninada এর স্বাভাবিক স্পিড (atempo=0.92) + স্টুডিও মাস্টারিং প্রয়োগ করে"""
+    if not shutil.which("ffmpeg"):
+        shutil.copy2(raw_wav, output_path)
+        return
+
+    paced_wav = raw_wav.with_suffix(".paced.wav")
     try:
-        from google import genai
-    except ImportError:
-        print("  ⚠️ 'google-genai' library not installed.")
-        return False
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(raw_wav), "-filter:a", f"atempo={tempo}", "-c:a", "pcm_s16le", str(paced_wav)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        src_for_master = paced_wav if (paced_wav.exists() and paced_wav.stat().st_size > 1000) else raw_wav
 
-    voice_id = os.environ.get("GEMINI_VOICE_ID", "voice_z3e67k0f8p8c").strip() or "voice_z3e67k0f8p8c"
-    delivery_style = os.environ.get("GEMINI_DELIVERY_STYLE", "Natural, articulate, and professional Bengali news anchor style").strip()
+        out_ext = output_path.suffix.lower()
+        codec_args = ["-c:a", "libmp3lame", "-b:a", "192k"] if out_ext == ".mp3" else ["-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le"]
 
-    start_idx = get_tracker_index("gemini_tts", total_keys)
-
-    for offset in range(total_keys):
-        cur_idx = (start_idx + offset) % total_keys
-        api_key = gemini_keys[cur_idx]
-        masked = mask_key(api_key)
-        print(f"  🚀 Attempting Gemini Key #{cur_idx+1}/{total_keys} ({masked})...")
-        start_t = time.time()
-
-        try:
-            client = genai.Client(api_key=api_key)
-            interaction = client.interactions.create(
-                model="gemini-3.8-flash-tts",
-                input=[{
-                    "type": "user_input",
-                    "content": [{
-                        "type": "text",
-                        "text": speech_text,
-                        "annotations": [{"type": "speech_metadata", "style": delivery_style}]
-                    }]
-                }],
-                response_format={"type": "audio"},
-                generation_config={"speech_config": [{"voice": voice_id}]}
-            )
-
-            if hasattr(interaction, 'output_audio') and hasattr(interaction.output_audio, 'data'):
-                audio_bytes = base64.b64decode(interaction.output_audio.data)
-                if len(audio_bytes) > 2000:
-                    with open(output_audio_path, "wb") as f:
-                        f.write(audio_bytes)
-                    save_tracker_index("gemini_tts", cur_idx, total_keys)
-                    elapsed = round(time.time() - start_t, 2)
-                    audio_mb = round(os.path.getsize(output_audio_path) / (1024 * 1024), 2)
-                    print(f"  ✅ [SUCCESS] Generated Long 10-Min Voice via Gemini 3.8 Flash! ({audio_mb} MB in {elapsed}s)")
-                    return True
-        except Exception as e:
-            print(f"  ⚠️ Gemini Key #{cur_idx+1} error: {e}")
-
-        save_tracker_index("gemini_tts", cur_idx + 1, total_keys)
-
-    return False
-
-# =========================================================================
-# 🌟 ২. ElevenLabs API ইঞ্জিন (Priority 2 - Smart Multi-Chunk Support)
-# =========================================================================
-
-def synthesize_with_elevenlabs(speech_text, output_audio_path):
-    print("\n--- [VOICE ENGINE 2: ElevenLabs API (Long Audio Pipeline)] ---")
-    eleven_keys = parse_keys_from_env("ELEVENLABS_API_KEYS", "ELEVENLABS_API_KEY")
-    total_keys = len(eleven_keys)
-    if total_keys == 0:
-        print("  ⚠️ 'ELEVENLABS_API_KEYS' not found.")
-        return False
-
-    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
-    start_idx = get_tracker_index("elevenlabs_tts", total_keys)
-    # ১০ মিনিটের টেক্সটকে ElevenLabs-এর উপযোগী চাঙ্কে বিভক্ত করা
-    chunks = split_text_into_chunks(speech_text, max_chars=1200)
-
-    for offset in range(total_keys):
-        cur_idx = (start_idx + offset) % total_keys
-        api_key = eleven_keys[cur_idx]
-        masked = mask_key(api_key)
-        print(f"  🚀 Attempting ElevenLabs Key #{cur_idx+1}/{total_keys} ({masked}) for {len(chunks)} chunks...")
-        start_t = time.time()
-
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json"
-        }
-
-        audio_parts = []
-        key_failed = False
-
-        for chunk_idx, chunk in enumerate(chunks, 1):
-            payload = {
-                "text": chunk,
-                "model_id": "eleven_multilingual_v2",
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-            }
+        master_cmd = [
+            "ffmpeg", "-y", "-i", str(src_for_master),
+            "-af",
+            "highpass=f=80,"
+            "equalizer=f=250:t=q:w=1.2:g=2.5,"
+            "equalizer=f=4500:t=q:w=1.5:g=-3.5,"
+            "acompressor=threshold=-18dB:ratio=2.5:attack=10:release=100,"
+            "loudnorm=I=-16:TP=-1.5:LRA=11",
+            *codec_args,
+            str(output_path),
+        ]
+        res = subprocess.run(master_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode != 0 or not output_path.exists() or output_path.stat().st_size < 1000:
+            if out_ext == ".mp3":
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(src_for_master), "-c:a", "libmp3lame", "-b:a", "192k", str(output_path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+            else:
+                shutil.copy2(src_for_master, output_path)
+    finally:
+        if paced_wav.exists():
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=90)
-                if resp.status_code == 200 and len(resp.content) > 1000:
-                    audio_parts.append(resp.content)
-                else:
-                    print(f"  ⚠️ ElevenLabs chunk #{chunk_idx} failed with code {resp.status_code}.")
-                    key_failed = True
-                    break
-            except Exception as e:
-                print(f"  ⚠️ ElevenLabs chunk #{chunk_idx} network error: {e}")
-                key_failed = True
-                break
+                paced_wav.unlink()
+            except Exception:
+                pass
 
-        if not key_failed and len(audio_parts) == len(chunks):
-            with open(output_audio_path, "wb") as f:
-                for part in audio_parts:
-                    f.write(part)
-            save_tracker_index("elevenlabs_tts", cur_idx, total_keys)
-            elapsed = round(time.time() - start_t, 2)
-            audio_mb = round(os.path.getsize(output_audio_path) / (1024 * 1024), 2)
-            print(f"  ✅ [SUCCESS] Generated Long 10-Min Audio via ElevenLabs! ({audio_mb} MB in {elapsed}s)")
-            return True
 
-        save_tracker_index("elevenlabs_tts", cur_idx + 1, total_keys)
+def synthesize_with_ninada(speech_text, output_audio_path):
+    """একক ভয়েস ইঞ্জিন: Ninada Neural Bengali Male (atempo=0.92 + Studio Mastering)"""
+    print("\n--- [VOICE ENGINE: Ninada Neural Bengali Male] ---")
+    if not speech_text:
+        return False
 
-    return False
+    out_path = Path(output_audio_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_wav = out_path.with_suffix(".ninada_raw.wav")
 
-# =========================================================================
-# 🌟 ৩. Microsoft Edge Neural ব্যাকআপ ইঞ্জিন (Priority 3)
-# =========================================================================
-
-def synthesize_with_edge_fallback(speech_text, output_audio_path):
-    print("\n--- [VOICE ENGINE 3: Microsoft Neural Fallback (bn-BD-PradeepNeural)] ---")
-    try:
-        import asyncio, edge_tts
-        start_t = time.time()
-        async def _make():
-            c = edge_tts.Communicate(speech_text, "bn-BD-PradeepNeural", rate="+0%", pitch="+0Hz")
-            await c.save(output_audio_path)
-        asyncio.run(_make())
-        if os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 1000:
-            elapsed = round(time.time() - start_t, 2)
-            audio_mb = round(os.path.getsize(output_audio_path) / (1024 * 1024), 2)
-            print(f"  ✅ [SUCCESS] Generated 10-Min Audio via Edge Neural Engine! ({audio_mb} MB in {elapsed}s)")
-            return True
-    except Exception as e:
-        print(f"  ⚠️ Edge fallback notice: {e}")
-    return False
-
-# =========================================================================
-# 🌟 ৪. লোকাল মিউজিক ইমার্জেন্সি ফলব্যাক (Priority 4)
-# =========================================================================
-
-def fallback_local_audio(output_audio_path):
-    print("\n--- [VOICE ENGINE 4: Emergency Local Audio/Music Fallback] ---")
-    candidates = [
-        "Music/bg.mp3", "Music/music.mp3", "sample_voice.mp3", 
-        "Photos/sample_voice.mp3", "workspace/bg.mp3"
-    ]
-    for c in candidates:
-        if os.path.exists(c) and os.path.getsize(c) > 2000:
-            shutil.copy(c, output_audio_path)
-            print(f"  ✅ [EMERGENCY FALLBACK] Using existing audio track '{c}'!")
-            return True
+    voice = os.environ.get("NINADA_VOICE", "male").strip().lower() or "male"
+    tempo = os.environ.get("NINADA_TEMPO", "0.92").strip() or "0.92"
+    start_t = time.time()
 
     try:
-        import wave, struct
-        with wave.open(output_audio_path, 'wb') as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(44100)
-            data = struct.pack('<h', 0) * (44100 * 600)  # ১০ মিনিটের নিরব সাউন্ড ট্র্যাক
-            wav.writeframes(data)
-        print("  ✅ [EMERGENCY FALLBACK] Generated 10-min fallback audio track!")
-        return True
+        tts = _get_ninada_engine()
+        chunks = _split_text_for_ninada(speech_text, max_chars=450)
+        print(f"  🎙️ Synthesizing {len(chunks)} chunk(s) with Ninada (voice={voice}, tempo={tempo})...")
+
+        parts = []
+        sr_final = 24000
+        pause = None
+
+        for idx, chunk in enumerate(chunks):
+            wav_bytes = tts.speak(chunk, lang="bn", voice=voice)
+            if not wav_bytes or len(wav_bytes) < 100:
+                continue
+            seg, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
+            sr_final = int(sr)
+            if pause is None:
+                pause = np.zeros(int(sr_final * 0.20), dtype=np.float32)
+            parts.append(np.asarray(seg, dtype=np.float32).reshape(-1))
+            if idx < len(chunks) - 1:
+                parts.append(pause)
+
+        if not parts:
+            print("  ❌ Ninada returned empty audio.")
+            return False
+
+        merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
+        sf.write(str(raw_wav), merged, sr_final, subtype="PCM_16")
+
+        _apply_ninada_postprocess(raw_wav, out_path, tempo=tempo)
+
+        if out_path.exists() and out_path.stat().st_size > 1000:
+            dur = round(sf.info(str(out_path)).duration, 1) if out_path.suffix.lower() == ".wav" else 0
+            audio_mb = round(out_path.stat().st_size / (1024 * 1024), 2)
+            dur_msg = f" | Duration: {dur}s" if dur else ""
+            print(f"  ✅ [SUCCESS] Ninada Mastered Audio Ready! ({audio_mb} MB{dur_msg} in {round(time.time() - start_t, 2)}s)")
+            return True
     except Exception as e:
-        print(f"  ⚠️ Audio generation failure: {e}")
+        print(f"  ❌ Ninada synthesis error: {e}")
+    finally:
+        if raw_wav.exists():
+            try:
+                raw_wav.unlink()
+            except Exception:
+                pass
+
     return False
 
-# =========================================================================
-# 🌟 মাস্টার অডিও পাইপলাইন (Orchestrator)
-# =========================================================================
 
 def generate_voiceover_audio_pipeline(text, output_audio_path):
     speech_text = clean_script_for_speech(text)
     clean_chars = len(speech_text)
     words = len(speech_text.split())
 
-    print("\n" + "="*65)
-    print("🎙️ [AUDIO ENGINE] Long 10-Minute Voice Pipeline Active")
+    print("\n" + "=" * 65)
+    print("🎙️ [AUDIO ENGINE] Ninada Bengali Studio Voice Pipeline")
     print(f"📊 [Script Stats] Chars: {clean_chars} | Words: {words}")
-    print("="*65)
+    print("=" * 65)
 
-    # ১. Gemini 3.8 Flash TTS
-    if synthesize_with_gemini(speech_text, output_audio_path):
-        return True
-
-    # ২. ElevenLabs
-    if synthesize_with_elevenlabs(speech_text, output_audio_path):
-        return True
-
-    # ৩. Microsoft Edge Neural
-    if synthesize_with_edge_fallback(speech_text, output_audio_path):
-        return True
-
-    # ৪. লোকাল ব্যাকআপ
-    return fallback_local_audio(output_audio_path)
+    return synthesize_with_ninada(speech_text, output_audio_path)
