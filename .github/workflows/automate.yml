@@ -1,13 +1,13 @@
 name: RSS Video Automation System
-
 on:
   repository_dispatch:
-    types: [rss_video_check] 
-  workflow_dispatch: 
+    types: [rss_video_check]
+  workflow_dispatch:
 
+# 🌟 কোনো অবস্থাতেই রানিং ভিডিও রেন্ডারিং ক্যানসেল হবে না
 concurrency:
   group: rss-automation-jobless
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -15,8 +15,7 @@ permissions:
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 180
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,104 +23,60 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           cache: 'pip'
 
+      # 🌟 Rclone, FFmpeg ও বাংলা ফন্ট ইনস্টল
       - name: Install System Dependencies (Fonts, FFmpeg, Rclone)
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg rclone
+
+      # 🌟 Rclone কনফিগারেশন সেটআপ
+      - name: Configure Rclone
+        shell: python
+        env:
+          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
+        run: |
+          import os
+          conf_data = os.environ.get('RCLONE_CONF_DATA', '').strip()
+          if conf_data:
+              config_path = os.path.expanduser('~/.config/rclone/rclone.conf')
+              os.makedirs(os.path.dirname(config_path), exist_ok=True)
+              with open(config_path, 'w', encoding='utf-8') as f:
+                  f.write(conf_data)
+              print("✅ Rclone configured successfully.")
+          else:
+              print("ℹ️ RCLONE_CONF is empty, running in RSS-only mode.")
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Configure Rclone (Secure Quote Handling)
-        shell: python
+      # 🌟 -u ফ্ল্যাগ দেওয়া হয়েছে যাতে প্রতিটি প্রিন্ট লাইন সাথে সাথে লাইভ লগে দেখা যায়
+      - name: Run Python Process (Manual Drive & RSS Auto)
         env:
-          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
-        run: |
-          import os
-          config_path = os.path.expanduser('~/.config/rclone/rclone.conf')
-          os.makedirs(os.path.dirname(config_path), exist_ok=True)
-          with open(config_path, 'w', encoding='utf-8') as f:
-              f.write(os.environ['RCLONE_CONF_DATA'])
-
-      # 🌟 ১. সাধারণ ওয়ার্কস্পেস ড্রাইভ সিঙ্ক
-      - name: Download Files from Google Drive
-        run: |
-          mkdir -p workspace
-          rclone sync "gdrive:" ./workspace --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --fast-list
-
-      # 🌟 ২. ইমার্জেন্সি ম্যানুয়াল ফোল্ডার ডাউনলোড (যদি ENABLE_MANUAL_FOLDER == 'true' থাকে)
-      - name: Download Manual Emergency Folder from Google Drive
-        if: ${{ secrets.ENABLE_MANUAL_FOLDER == 'true' }}
-        run: |
-          mkdir -p workspace_manual
-          rclone sync "gdrive:" ./workspace_manual --drive-root-folder-id="${{ secrets.MANUAL_DRIVE_FOLDER_ID }}" --fast-list || true
-
-      # 🌟 ৩. মূল পাইথন প্রসেস রান
-      - name: Run Python Process (Movie & YouTube upload)
-        env:
+          PYTHONUNBUFFERED: "1"
+          HF_HUB_ENABLE_HF_TRANSFER: "0"
+          HF_HUB_DOWNLOAD_TIMEOUT: "300"
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
-          GDRIVE_PARENT_FOLDER_ID: ${{ secrets.GDRIVE_PARENT_FOLDER_ID }}
-          
-          # 🚨 Manual Override Switch
           ENABLE_MANUAL_FOLDER: ${{ secrets.ENABLE_MANUAL_FOLDER }}
-          
-          # 🤖 AI Platforms (Priority: 1. OpenRouter ➔ 2. Groq ➔ 3. Cerebras ➔ 4. Ollama)
+          MANUAL_DRIVE_FOLDER_ID: ${{ secrets.MANUAL_DRIVE_FOLDER_ID }}
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
-          GROQ_API: ${{ secrets.GROQ_API }}
           CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
           OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
-          Ollama_API_Key: ${{ secrets.Ollama_API_Key }}
-          
-          # 🎙️ TTS Voice Platforms
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_VOICE_ID: ${{ secrets.GEMINI_VOICE_ID }}
-          GEMINI_DELIVERY_STYLE: ${{ secrets.GEMINI_DELIVERY_STYLE }}
-          ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
-          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-        run: python main.py
+        run: python -u main.py
 
-      # 🌟 ৪. রান শেষে ম্যানুয়াল ফোল্ডারের ফাইলগুলো গুগল ড্রাইভ থেকে স্বয়ংক্রিয় ডিলিট করা
-      - name: Cleanup Manual Google Drive Folder
-        if: always() && ${{ secrets.ENABLE_MANUAL_FOLDER == 'true' }}
-        run: |
-          rclone delete "gdrive:" --drive-root-folder-id="${{ secrets.MANUAL_DRIVE_FOLDER_ID }}" --fast-list || true
-          rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.MANUAL_DRIVE_FOLDER_ID }}" --leave-root || true
-
-      # 🌟 ৫. এপিআই ট্র্যাকার স্বয়ংক্রিয়ভাবে গিটহাবে সেভ রাখা
-      - name: Commit & Push API Tracker
+      - name: Save & Commit History and API Key Trackers
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add api_tracker.json workspace/api_tracker.json || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update API tracker state [skip ci]" && git push) || true
-
-      # 🌟 ৬. রেগুলার ড্রাইভ ফোল্ডার ক্লিনআপ
-      - name: Push updates back to Google Drive (Permanent Folder Cleanup)
-        if: always()
-        run: |
-          rclone sync ./workspace "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --drive-use-trash=false --fast-list
-          rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --leave-root || true
-
-      # 🌟 ৭. পোর্ট্রেট ভিডিও জবলাইভে পাঠানো
-      - name: Push JobLive videos to Google Drive
-        if: always()
-        run: |
-          if [ -d "workspace_live" ]; then
-            rclone copy ./workspace_live "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --fast-list
-          fi
-
-      # 🌟 ৮. ৩০ দিনের পুরোনো জবলাইভ ভিডিও ড্রাইভ থেকে ডিলিট
-      - name: Cleanup old JobLive videos (Older than 30 days)
-        if: always()
-        run: |
-          rclone delete "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --min-age 30d --fast-list || true
+          git add workspace/history.txt api_key_tracker.json 2>/dev/null || true
+          git commit -m "Update upload history & active API key tracker [skip ci]" || true
+          git push || true
