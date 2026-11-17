@@ -7,8 +7,11 @@ moviepy==1.0.3
 imageio-ffmpeg
 Pillow
 requests
-numpy<2.0.0
+numpy>=1.24.0,<2.0.0
 fonttools
-edge-tts>=7.3.1
-kaggle>=2.0.0
+ninada
+onnxruntime>=1.18.0
+soundfile>=0.12.1
+scipy
+huggingface_hub
 six
