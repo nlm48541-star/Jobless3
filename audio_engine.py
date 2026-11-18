@@ -10,14 +10,16 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from ai_service import convert_all_numbers_in_script
+
 _NINADA_ENGINE = None
 
 
 def clean_script_for_speech(raw_text):
     if not raw_text:
         return ""
-    text = re.sub(r'<think>.*?</think>', '', str(raw_text), flags=re.DOTALL)
-    text = re.sub(r'[\*\_\|\#\~`]', '', text)
+    text = convert_all_numbers_in_script(raw_text)
+    text = re.sub(r'[\*\_\|\#\~\x60]', '', text)
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'https?://\S+|wa\.me/\S+', '', text)
     text = re.sub(r'[\<\>\{\}\(\)\@\$\^\&\+\=\_\\\/]', ' ', text)
@@ -156,7 +158,7 @@ def synthesize_with_ninada(speech_text, output_audio_path):
             seg, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
             sr_final = int(sr)
             if pause is None:
-                pause = np.zeros(int(sr_final * 0.20), dtype=np.float32)
+                pause = np.zeros(int(sr_final * 0.18), dtype=np.float32)
             parts.append(np.asarray(seg, dtype=np.float32).reshape(-1))
             if idx < len(chunks) - 1:
                 parts.append(pause)
