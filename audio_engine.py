@@ -27,6 +27,14 @@ def clean_script_for_speech(raw_text):
     return text
 
 
+def has_kaggle_credentials():
+    if os.environ.get("KAGGLE_API_TOKEN", "").strip():
+        return True
+    if (Path.home() / ".kaggle" / "kaggle.json").exists():
+        return True
+    return False
+
+
 def _split_text_for_ninada(text, max_chars=450):
     """স্বাভাবিক দাঁড়ি-কমা বহাল রেখে দীর্ঘ স্ক্রিপ্টকে নিরাপদ বাক্য-খণ্ডে বিভক্ত করে"""
     text = re.sub(r'\s+', ' ', str(text)).strip()
@@ -129,8 +137,8 @@ def _apply_ninada_postprocess(raw_wav: Path, output_path: Path, tempo: str = "0.
 
 
 def synthesize_with_ninada(speech_text, output_audio_path):
-    """একক ভয়েস ইঞ্জিন: Ninada Neural Bengali Male (atempo=0.92 + Studio Mastering)"""
-    print("\n--- [VOICE ENGINE: Ninada Neural Bengali Male] ---")
+    """ব্যাকআপ ইঞ্জিন (Priority 2): Ninada v5.1.2 Neural Bengali Male (atempo=0.92 + Studio Mastering)"""
+    print("\n--- [BACKUP VOICE ENGINE: Ninada v5.1.2 Neural Bengali Male] ---")
     if not speech_text:
         return False
 
@@ -176,7 +184,7 @@ def synthesize_with_ninada(speech_text, output_audio_path):
             dur = round(sf.info(str(out_path)).duration, 1) if out_path.suffix.lower() == ".wav" else 0
             audio_mb = round(out_path.stat().st_size / (1024 * 1024), 2)
             dur_msg = f" | Duration: {dur}s" if dur else ""
-            print(f"  ✅ [SUCCESS] Ninada Mastered Audio Ready! ({audio_mb} MB{dur_msg} in {round(time.time() - start_t, 2)}s)")
+            print(f"  ✅ [SUCCESS] Ninada Backup Audio Ready! ({audio_mb} MB{dur_msg} in {round(time.time() - start_t, 2)}s)")
             return True
     except Exception as e:
         print(f"  ❌ Ninada synthesis error: {e}")
@@ -190,14 +198,83 @@ def synthesize_with_ninada(speech_text, output_audio_path):
     return False
 
 
-def generate_voiceover_audio_pipeline(text, output_audio_path):
-    speech_text = clean_script_for_speech(text)
-    clean_chars = len(speech_text)
-    words = len(speech_text.split())
+def generate_voiceover_batch_pipeline(batch_items, batch_work_dir):
+    """
+    ১. প্রাইমারি (Priority 1): KAGGLE_API_TOKEN থাকলে Kaggle IndicF5 ডুয়াল-T4 GPU-তে ১টি ব্যাচ কলে সব অডিও তৈরি করে।
+    ২. ব্যাকআপ (Priority 2): টোকেন না থাকলে বা Kaggle GPU/এরর সমস্যা হলে কাজ না থামিয়ে Ninada v5.1.2 দিয়ে অডিও তৈরি করে।
+    """
+    if not batch_items:
+        return {}
+
+    os.makedirs(batch_work_dir, exist_ok=True)
+    cleaned_tasks = []
+    for item in batch_items:
+        sp_text = clean_script_for_speech(item["text"])
+        cleaned_tasks.append({
+            "filename": item["filename"],
+            "text": sp_text,
+            "target_path": item["target_path"],
+        })
 
     print("\n" + "=" * 65)
-    print("🎙️ [AUDIO ENGINE] Ninada Bengali Studio Voice Pipeline")
-    print(f"📊 [Script Stats] Chars: {clean_chars} | Words: {words}")
+    print("🎙️ [AUDIO ENGINE] Priority 1: Kaggle IndicF5 (Dual-T4) | Priority 2: Ninada v5.1.2")
+    print(f"📦 Total Scripts Queued: {len(cleaned_tasks)}")
+    for idx, t in enumerate(cleaned_tasks, 1):
+        print(f"  #{idx}: {t['filename']} | {len(t['text'].split())} words | {len(t['text'])} chars")
     print("=" * 65)
 
-    return synthesize_with_ninada(speech_text, output_audio_path)
+    results = {}
+
+    # ১. প্রাইমারি: Kaggle IndicF5 ডুয়াল-T4 GPU (KAGGLE_API_TOKEN উপস্থিত থাকলে)
+    if has_kaggle_credentials():
+        try:
+            from kaggle_tts import generate_voices_batch
+            default_voice = os.environ.get("KAGGLE_DEFAULT_VOICE", "male").strip().lower()
+            speech_speed = float(os.environ.get("KAGGLE_SPEECH_SPEED", "0.93"))
+            nfe_step = int(os.environ.get("KAGGLE_NFE_STEP", "16"))
+
+            generated_map = generate_voices_batch(
+                tasks=[{"filename": t["filename"], "text": t["text"]} for t in cleaned_tasks],
+                output_dir=batch_work_dir,
+                default_voice=default_voice,
+                speech_speed=speech_speed,
+                nfe_step=nfe_step,
+            )
+            for t in cleaned_tasks:
+                src = generated_map.get(t["filename"])
+                dst = Path(t["target_path"])
+                if src and Path(src).exists() and Path(src).stat().st_size > 1000:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src), str(dst))
+                    results[t["filename"]] = str(dst)
+                    print(f"  🎵 [Kaggle] Saved '{t['filename']}' -> {dst}")
+
+            if len(results) == len(cleaned_tasks):
+                return results
+            print("\n⚠️ [Kaggle Partial Result] Remaining audio(s) will be generated via Ninada v5.1.2 backup...")
+        except Exception as e:
+            print(f"\n⚠️ [Kaggle TTS Failed] ({e}) — Switching seamlessly to Ninada v5.1.2 backup...")
+    else:
+        print("\nℹ️ KAGGLE_API_TOKEN পাওয়া যায়নি — সরাসরি ব্যাকআপ Ninada v5.1.2 দিয়ে অডিও তৈরি করা হচ্ছে...")
+
+    # ২. ব্যাকআপ (Priority 2): যেগুলোর অডিও Kaggle থেকে আসেনি, সেগুলোর জন্য Ninada v5.1.2
+    for t in cleaned_tasks:
+        if t["filename"] in results:
+            continue
+        dst = t["target_path"]
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        if synthesize_with_ninada(t["text"], dst):
+            if os.path.exists(dst) and os.path.getsize(dst) > 1000:
+                results[t["filename"]] = dst
+
+    return results
+
+
+def generate_voiceover_audio_pipeline(text, output_audio_path):
+    """একক অডিও জেনারেশনের হেল্পার ফাংশন (Priority 1: Kaggle -> Priority 2: Ninada)"""
+    fname = os.path.basename(output_audio_path)
+    res = generate_voiceover_batch_pipeline(
+        [{"filename": fname, "text": text, "target_path": output_audio_path}],
+        batch_work_dir=os.path.join("temp_assets", "single_audio"),
+    )
+    return fname in res
