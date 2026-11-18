@@ -70,6 +70,7 @@ jobs:
           CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
           OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: python -u main.py
 
       - name: Save & Commit History and API Key Trackers
