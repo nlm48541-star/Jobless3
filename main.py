@@ -149,7 +149,7 @@ def prepare_workspace_video_jobs():
 
 
 def finalize_workspace_video_job(yt, job, audio_path):
-    """ধাপ ৩: অডিও পাওয়ার পর ওয়ার্কস্পেস ভিডিও রেন্ডার ও আপলোড (ডিজাইন অপরিবর্তিত)"""
+    """ধাপ ৩: অডিও পাওয়ার পর ওয়ার্কস্পেস ভিডিও রেন্ডার ও আপলোড (আগের ডিজাইন অক্ষুণ্ণ)"""
     folder_name = job["folder_name"]
     folder_path = job["folder_path"]
     os.makedirs(TMP_DIR, exist_ok=True)
@@ -193,7 +193,7 @@ def finalize_workspace_video_job(yt, job, audio_path):
             pass
 
         shutil.rmtree(folder_path, ignore_errors=True)
-        print(f"✅ Folder '{folder_name}' successfully uploaded.\n")
+        print(f"✅ Folder '{folder_name}' successfully processed and uploaded.\n")
 
 
 def process_shorts_folder(yt):
@@ -229,7 +229,7 @@ def process_shorts_folder(yt):
 
 
 if __name__ == "__main__":
-    print("\n====== [ Google Drive Bot Active | Kaggle IndicF5 (P1) + Ninada v5.1.2 (P2) ] ======\n")
+    print("\n====== [ Google Drive Bot Active | Kaggle IndicF5 + Ninada Backup Engine ] ======\n")
     try:
         os.makedirs(TMP_DIR, exist_ok=True)
         yt_service = get_youtube_service()
@@ -252,7 +252,7 @@ if __name__ == "__main__":
         except Exception:
             traceback.print_exc()
 
-        # ---------------- ধাপ ২: ১টি ব্যাচ কলে সবগুলো অডিও তৈরি (Kaggle -> Ninada Backup) ----------------
+        # ---------------- ধাপ ২: মাত্র ১টি ব্যাচ কলে সব অডিও তৈরি (Kaggle -> Ninada Backup) ----------------
         batch_tasks = []
         manual_audio_target = None
 
