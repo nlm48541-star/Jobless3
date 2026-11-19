@@ -48,7 +48,7 @@ def clean_manual_folder_on_drive(folder_id):
 
 
 def prepare_manual_drive_job():
-    """ধাপ ১: ম্যানুয়াল ড্রাইভের ফাইল ও AI স্ক্রিপ্ট প্রস্তুত করে (অডিও এখনো বানাবে না)"""
+    """ধাপ ১: ম্যানুয়াল ড্রাইভের ফাইল ও AI স্ক্রিপ্ট প্রস্তুত করে (অডিও ব্যাচ কলে হবে)"""
     if not is_manual_mode_enabled():
         return None
 
@@ -174,7 +174,7 @@ def prepare_manual_drive_job():
         except Exception:
             pass
     else:
-        print("🤖 [ARTICLE TEXT MODE] Generating full accurate script from article text...")
+        print("🤖 [ARTICLE TEXT MODE] Generating full accurate script from article & circular images...")
         source_text = article_text if article_text else video_title
         ai_res = generate_job_content(video_title, source_text, img_files)
         opt_title, voiceover_script, thumb_meta, video_desc, video_tags = ai_res
