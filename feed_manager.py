@@ -6,26 +6,28 @@ from bs4 import BeautifulSoup, NavigableString
 from PIL import Image
 
 WORKSPACE_DIR = "workspace"
-FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'bank', 'চলমান']
+FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'ব্যাঙ্ক', 'bank', 'চলমান']
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
 }
 
 NOISE_SELECTOR_RE = re.compile(
-    r'(sidebar|widget|toc|table-of-contents|ez-toc|lwptoc|rank-math-toc|faq|accordion|'
-    r'related|recent-posts|popular-posts|author-box|comment|share|social|newsletter|'
+    r'(?:^|[\s_-])(sidebar|widget|toc|table-of-contents|ez-toc|lwptoc|rank-math-toc|faq|'
+    r'related|recent-posts|popular-posts|author-box|comments?-area|comment-respond|share|social|newsletter|'
     r'disclaimer|calculator|breadcrumb|wp-post-image|post-thumbnail|featured-image|'
     r'page-header-image|entry-header|post-meta|entry-meta|entry-footer|navigation|'
-    r'nav-links|yarpp|crp_related|jp-relatedposts|heateor|addtoany|sharedaddy)',
+    r'nav-links|yarpp|crp_related|jp-relatedposts|heateor|addtoany|sharedaddy)(?:$|[\s_-])',
     re.I,
 )
 
+# বাউন্ডারি-সেফ রেজেক্স: '/wp-content/uploads/' এর 'uploads' এর ভেতর 'ads' ম্যাচ করবে না
 BAD_IMG_RE = re.compile(
-    r'(logo|avatar|gravatar|icon|emoji|share|button|badge|qrcode|qr-code|favicon|'
-    r'ads|promo|author|whatsapp|telegram|facebook|messenger|placeholder|'
-    r'150x150|300x169|300x200|wp-content/themes|\.svg(?:\?|$)|\.gif(?:\?|$))',
+    r'(?:^|[/_\-.])(logo|avatar|gravatar|icon|emoji|share|button|badge|qrcode|qr-code|favicon|'
+    r'ads?|advert|promo|author|whatsapp|telegram|facebook|messenger|placeholder)(?:[/_\-.]|$)|'
+    r'(?:-150x150|-300x169|-300x200|wp-content/themes|\.svg(?:\?|$)|\.gif(?:\?|$))',
     re.I,
 )
 
@@ -90,8 +92,26 @@ def clean_filename(text):
     return text[:90]
 
 
+def _is_valid_img_url(raw_url, base_url=""):
+    if not raw_url:
+        return None
+    url = str(raw_url).strip()
+    if not url or url.startswith('data:'):
+        return None
+    if base_url:
+        url = urljoin(base_url, url)
+    u_lower = url.lower()
+    if not u_lower.startswith('http'):
+        return None
+    if BAD_IMG_RE.search(u_lower):
+        return None
+    if any(ext in u_lower for ext in ('.jpg', '.jpeg', '.png', '.webp')) or any(host_tok in u_lower for host_tok in ('uploads', 'googleusercontent', 'wp.com/')):
+        return url
+    return None
+
+
 def _pick_real_img_src(img_tag, base_url=""):
-    """WordPress Lazy-Load (data-lazy-src, data-src) আগে চেক করে এবং ডামি data:image/svg+xml বাদ দেয়"""
+    """WordPress Lazy-Load (data-lazy-src, data-src, <picture><source>) আগে চেক করে"""
     cls = " ".join(img_tag.get('class', [])) if isinstance(img_tag.get('class'), list) else str(img_tag.get('class', ''))
     if 'wp-post-image' in cls.lower():
         return None
@@ -104,29 +124,30 @@ def _pick_real_img_src(img_tag, base_url=""):
         img_tag.get('data-full-url'),
         img_tag.get('data-large_image'),
     ]
+
     for attr in ('data-lazy-srcset', 'data-srcset', 'srcset'):
         ss = img_tag.get(attr)
         if ss:
             parts = [p.strip().split()[0] for p in ss.split(',') if p.strip()]
             if parts:
                 candidates.append(parts[-1])
+
+    parent_pic = img_tag.find_parent('picture')
+    if parent_pic:
+        for src_tag in parent_pic.find_all('source'):
+            for attr in ('data-lazy-srcset', 'data-srcset', 'srcset'):
+                ss = src_tag.get(attr)
+                if ss:
+                    parts = [p.strip().split()[0] for p in ss.split(',') if p.strip()]
+                    if parts:
+                        candidates.append(parts[-1])
+
     candidates.append(img_tag.get('src'))
 
     for raw in candidates:
-        if not raw:
-            continue
-        url = str(raw).strip()
-        if not url or url.startswith('data:'):
-            continue
-        if base_url:
-            url = urljoin(base_url, url)
-        u_lower = url.lower()
-        if not u_lower.startswith('http'):
-            continue
-        if BAD_IMG_RE.search(u_lower):
-            continue
-        if any(ext in u_lower for ext in ('.jpg', '.jpeg', '.png', '.webp')) or 'uploads' in u_lower or 'googleusercontent' in u_lower:
-            return url
+        valid = _is_valid_img_url(raw, base_url=base_url)
+        if valid:
+            return valid
     return None
 
 
@@ -192,10 +213,10 @@ def _collect_imgs_from_tag(tag, base_url):
     for img in tag.find_all('img'):
         parent_a = img.find_parent('a')
         if parent_a and parent_a.get('href'):
-            href = urljoin(base_url, parent_a.get('href').strip())
-            if any(ext in href.lower() for ext in ('.jpg', '.jpeg', '.png', '.webp')) and not BAD_IMG_RE.search(href):
-                if href not in urls:
-                    urls.append(href)
+            href_valid = _is_valid_img_url(parent_a.get('href'), base_url=base_url)
+            if href_valid and any(ext in href_valid.lower() for ext in ('.jpg', '.jpeg', '.png', '.webp')):
+                if href_valid not in urls:
+                    urls.append(href_valid)
                 continue
         real_url = _pick_real_img_src(img, base_url=base_url)
         if real_url and real_url not in urls:
@@ -219,6 +240,8 @@ def extract_image_urls_from_html(html_content, base_url=""):
             htxt = heading.get_text(" ", strip=True)
             if CIRCULAR_SECTION_RE.search(htxt):
                 sib = heading.find_next_sibling()
+                if sib is None and heading.parent and heading.parent != container:
+                    sib = heading.parent.find_next_sibling()
                 while sib:
                     if sib.name in ('h2',) or (sib.name in ('h3', 'h4') and any(m in sib.get_text(" ", strip=True) for m in STOP_MARKERS)):
                         break
@@ -323,40 +346,48 @@ def scrape_article_content_and_images(page_url):
             _strip_noise_elements(target)
             _remove_inline_related_blocks(target)
             clean_text = _clean_article_text(target, site_type=site_type)
+        else:
+            print(f"⚠️ HTTP {resp.status_code} fetching {page_url}")
     except Exception as e:
         print(f"⚠️ Error scraping article: {e}")
     return title, clean_text, img_urls
 
 
 def download_image(url, output_path, referer_url=""):
-    try:
-        req_headers = HEADERS.copy()
-        if referer_url:
-            req_headers["Referer"] = referer_url
-        req = requests.get(url, headers=req_headers, timeout=22)
-        if req.status_code == 200 and len(req.content) > 8000:
-            with open(output_path, 'wb') as f:
-                f.write(req.content)
-            with Image.open(output_path) as im:
-                w, h = im.size
-                if w < 450 or h < 350:
+    attempts = []
+    h1 = HEADERS.copy()
+    if referer_url:
+        h1["Referer"] = referer_url
+    attempts.append(h1)
+    if referer_url:
+        attempts.append(HEADERS.copy())
+
+    for req_headers in attempts:
+        try:
+            req = requests.get(url, headers=req_headers, timeout=22)
+            if req.status_code == 200 and len(req.content) > 8000:
+                with open(output_path, 'wb') as f:
+                    f.write(req.content)
+                with Image.open(output_path) as im:
+                    w, h = im.size
+                    if w < 450 or h < 350:
+                        os.remove(output_path)
+                        return False
+                    im.convert("RGB").save(output_path, "JPEG", quality=92)
+                return True
+        except Exception:
+            if os.path.exists(output_path):
+                try:
                     os.remove(output_path)
-                    return False
-                im.convert("RGB").save(output_path, "JPEG", quality=92)
-            return True
-    except Exception:
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except Exception:
-                pass
+                except Exception:
+                    pass
     return False
 
 
 def _entry_has_forbidden_category(entry):
     tags = getattr(entry, 'tags', None) or []
     cat_text = " ".join(str(t.get('term', '')) for t in tags if isinstance(t, dict)).lower()
-    if any(k in cat_text for k in ['এনজিও', 'ngo', 'ব্যাংক', 'bank', 'চলমান বিজ্ঞপ্তি']):
+    if any(k in cat_text for k in ['এনজিও', 'ngo', 'ব্যাংক', 'ব্যাঙ্ক', 'bank', 'চলমান বিজ্ঞপ্তি']):
         return True
     return False
 
@@ -414,6 +445,10 @@ def check_new_articles_and_prepare_folders():
 
                 scraped_title, article_text, img_urls = scrape_article_content_and_images(link) if link else ("", "", [])
 
+                if is_forbidden_article(scraped_title):
+                    print(f"🚫 [FILTERED] Skipping '{folder_title}' (Forbidden keyword in page title).")
+                    continue
+
                 if not img_urls or len(article_text) < 120:
                     rss_html = entry.content[0].value if hasattr(entry, 'content') else getattr(entry, 'summary', "")
                     if rss_html:
@@ -428,7 +463,7 @@ def check_new_articles_and_prepare_folders():
                                 article_text = rss_text
 
                 if not img_urls:
-                    print(f"⏩ Skipping '{folder_title}' (No valid circular images found).")
+                    print(f"⏩ Skipping '{folder_title}' (No valid circular images found in HTML).")
                     continue
 
                 folder_path = os.path.join(WORKSPACE_DIR, folder_title)
@@ -446,6 +481,7 @@ def check_new_articles_and_prepare_folders():
                             pass
 
                 if not downloaded_info:
+                    print(f"⏩ Skipping '{folder_title}' (Found {len(img_urls)} image URL(s), all failed download/size check).")
                     shutil.rmtree(folder_path, ignore_errors=True)
                     continue
 
